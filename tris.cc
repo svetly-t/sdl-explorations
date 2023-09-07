@@ -149,6 +149,10 @@ int main() {
     v2d cursor;
     bool lmb = false;
 
+    // draw norm
+    SDL_Point normal[2];
+    bool draw_normal = false;
+
     SDL_Event sdl_event;
     bool exit = false;
     for (;!exit;) {
@@ -206,6 +210,9 @@ int main() {
             }
         }
 
+        // gets set to true if any of the points in t2 are in t1.
+        draw_normal = false;
+
         for (size_t i = 3; i < 6; ++i) {
             if (triangle1.contains(verts[i].pos)) {
                 // find the 2 verts with smallest area wrt v
@@ -217,31 +224,59 @@ int main() {
                 if (a3 < min) min = a3;
 
                 // find the normal line to those verts' edge
-                v2d edge;
+                v2d ed;
+                edge *e = nullptr;
                 if (min == a1) {
-                    edge.x = verts[1].pos.x - verts[0].pos.x;
-                    edge.y = verts[1].pos.y - verts[0].pos.y;
+                    ed.x = verts[1].pos.x - verts[0].pos.x;
+                    ed.y = verts[1].pos.y - verts[0].pos.y;
+                    e = &triangle1.e1;
                 }
                 if (min == a2) {
-                    edge.x = verts[0].pos.x - verts[2].pos.x;
-                    edge.y = verts[0].pos.y - verts[2].pos.y;
+                    ed.x = verts[0].pos.x - verts[2].pos.x;
+                    ed.y = verts[0].pos.y - verts[2].pos.y;
+                    e = &triangle1.e2;
                 }
                 if (min == a3) {
-                    edge.x = verts[2].pos.x - verts[1].pos.x;
-                    edge.y = verts[2].pos.y - verts[1].pos.y;
+                    ed.x = verts[2].pos.x - verts[1].pos.x;
+                    ed.y = verts[2].pos.y - verts[1].pos.y;
+                    e = &triangle1.e3;
                 }
 
                 v2d norm;
-                norm.x = edge.y;
-                norm.y = -edge.x;
+                norm.x = ed.y;
+                norm.y = -ed.x;
 
-                float mag = edge.magnitude();
+                v2d t1_center;
+                t1_center.x = (triangle1.v1.pos.x + triangle1.v2.pos.x + triangle1.v3.pos.x) / 3.0;
+                t1_center.y = (triangle1.v1.pos.y + triangle1.v2.pos.y + triangle1.v3.pos.y) / 3.0;
+
+                v2d contact;
+                contact.x = verts[i].pos.x - t1_center.x;
+                contact.y = verts[i].pos.y - t1_center.y;
+
+                float dot = contact.x * norm.x + contact.y * norm.y;
+                if (dot > 0) {
+                    norm.x = -norm.x;
+                    norm.y = -norm.y;
+                }
+
+                draw_normal = true;
+                normal[0].x = verts[i].pos.x;
+                normal[0].y = verts[i].pos.y;
+                normal[1].x = verts[i].pos.x + norm.x;
+                normal[1].y = verts[i].pos.y + norm.y;
+
+                float mag = ed.magnitude();
                 float h = 2 * min / mag;
 
-                for (size_t i = 0; i < 3; ++i) {
-                    verts[i].pos.x += norm.x * h / mag; //verts[i].old.x;
-                    verts[i].pos.y += norm.y * h / mag; //verts[i].old.y;
-                }
+                // for (size_t i = 0; i < 3; ++i) {
+                //     verts[i].pos.x += norm.x * h / mag; //verts[i].old.x;
+                //     verts[i].pos.y += norm.y * h / mag; //verts[i].old.y;
+                // }
+                e->v1.pos.x += norm.x * h / mag; //verts[i].old.x;
+                e->v1.pos.y += norm.y * h / mag; //verts[i].old.y;
+                e->v2.pos.x += norm.x * h / mag; //verts[i].old.x;
+                e->v2.pos.y += norm.y * h / mag; //verts[i].old.y;
 
                 // v2d t2_center;
                 // t2_center.x = (triangle2.v1.pos.x + triangle2.v2.pos.x + triangle2.v3.pos.x) / 3.0;
@@ -298,7 +333,10 @@ int main() {
         points[3].y = triangle2.v1.pos.y;
 
         // draw tri2
-        SDL_RenderDrawLines(sdl_renderer, points, 4);  
+        SDL_RenderDrawLines(sdl_renderer, points, 4);
+
+        // draw normal
+        if (draw_normal) SDL_RenderDrawLines(sdl_renderer, normal, 2);  
 
         SDL_UpdateWindowSurface(sdl_window);
 
