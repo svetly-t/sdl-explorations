@@ -1,4 +1,10 @@
+#include <iostream>
 #include <unordered_map>
+#include <SDL2/SDL.h>
+#include <SDL2/SDL_image.h>
+
+#include <cstdlib>
+#include <cmath>
 
 struct v2d {
   float x = 0;
@@ -65,9 +71,9 @@ struct v2d {
  * attributes.
  */
 struct Object {
-  Object() { key = (size_t)this; }
   size_t key;
-  v2d position;
+  v2d pos;
+  Object() { key = (size_t)this; }
 };
 
 /* 
@@ -151,7 +157,7 @@ class EventToInput {
     keycode_map_[(int)sc]->up = true;
   }
  private:
-  const int kButtons = 284;
+  const static int kButtons = 284;
   Input::Button *keycode_map_[kButtons] = {0};
 };
 
@@ -197,14 +203,13 @@ void SetInput(Input &input) {
 }
 
 /* Update our buttons/window state if there's anything in the event queue */
-void GetEvents(Input &input) {
+int GetEvents(Input &input) {
   SDL_Event sdl_event;
 
   for (;SDL_PollEvent(&sdl_event) > 0;) {
     switch (sdl_event.type) {
       case SDL_QUIT:
-        exit = true;
-        break;
+        return -1;
       case SDL_MOUSEMOTION:
         break;
       case SDL_MOUSEBUTTONDOWN:
@@ -219,6 +224,8 @@ void GetEvents(Input &input) {
         break;
     }
   }
+
+  return 0;
 }
 
 /* Clear the view buffer, etc. */
@@ -226,10 +233,19 @@ void StartDraw() {
   SDL_FillRect(sdl_surface, NULL, SDL_MapRGB(sdl_surface->format, 0, 0, 0));
 }
 
+void EndDraw() {
+  SDL_UpdateWindowSurface(sdl_window);
+}
+
+/* Set color for the next draw thing */
+void SetColor(int r, int g, int b) {
+  SDL_SetRenderDrawColor(sdl_renderer, r, g, b, 255);
+}
+
 void DrawRect(v2d pos) {
   SDL_Rect rect;
   rect.x = pos.x - 10;
-  rect.x = pos.x - 10;
+  rect.y = pos.y - 10;
   rect.w = 20;
   rect.h = 20;
   SDL_RenderDrawRect(sdl_renderer, &rect);
@@ -243,13 +259,14 @@ class Drawer {
     uint8_t r = 255;
     uint8_t g = 255;
     uint8_t b = 255;
+    v2d pos;
   };
 
   Drawer() {
     map_.reserve(512);
   }
   void Register(Object &object) {
-    map_[object.key] = struct Attributes();
+    map_[object.key] = Attributes();
   }
   void Unregister(Object &object) {
     if (map_.find(object.key) == map_.end()) return;
@@ -257,21 +274,21 @@ class Drawer {
   }
   void Draw() {
     sdl::StartDraw();
-    for (const auto &[obj, attr] : map_) {
-      sdl::SetColor();
-      sdl::DrawRect(obj.pos);
+    for (const auto &[_, attr] : map_) {
+      sdl::SetColor(attr.r, attr.g, attr.b);
+      sdl::DrawRect(attr.pos);
     }
     sdl::EndDraw();
   }
-  void Update(Object &object, struct Attributes attr) {
-
+  void UpdatePosition(Object &object) {
+    if (map_.find(object.key) == map_.end()) return;
+    map_[object.key].pos = object.pos;
   }
  private:
   std::unordered_map<size_t, struct Attributes> map_;
-} // class Drawer
+}; // class Drawer
 
-
-int main() {
+int main(int argv, char** args) {
   /* Initialize */
   Object ship;
   Object bullet;
@@ -281,12 +298,16 @@ int main() {
 
   Drawer drawer;
 
+  /* Set up SDL */
   sdl::Initialize();
   sdl::SetInput(input);
 
+  /* Register game objects with the Drawer */
+  drawer.Register(ship);
+
   for (;;) {
-    /* Event loop */
-    sdl::GetEvents(input);
+    /* Get events from SDLs */
+    if (sdl::GetEvents(input)) return 0;
 
     /*** Update objects ***/
 
@@ -296,11 +317,18 @@ int main() {
     if (input.left.held) --ship.pos.x;
     if (input.right.held) ++ship.pos.x;
     
-    /**/
-
+    /* Clear transient state for buttons */
     input.AtFrameEnd();
+
+    /* Update object metadata in the Drawer */
+    drawer.UpdatePosition(ship);
 
     /* Draw all the objects */
     drawer.Draw();
+
+    /* "Frame time" */
+    SDL_Delay(15);
   }
+
+  return 0;
 }
