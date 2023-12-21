@@ -259,7 +259,8 @@ class Drawer {
     uint8_t r = 255;
     uint8_t g = 255;
     uint8_t b = 255;
-    v2d pos;
+    /* Pointer back to the object */
+    Object *obj;
   };
 
   Drawer() {
@@ -267,6 +268,7 @@ class Drawer {
   }
   void Register(Object &object) {
     map_[object.key] = Attributes();
+    map_[object.key].obj = &object;
   }
   void Unregister(Object &object) {
     if (map_.find(object.key) == map_.end()) return;
@@ -276,27 +278,81 @@ class Drawer {
     sdl::StartDraw();
     for (const auto &[_, attr] : map_) {
       sdl::SetColor(attr.r, attr.g, attr.b);
-      sdl::DrawRect(attr.pos);
+      sdl::DrawRect(attr.obj->pos);
     }
     sdl::EndDraw();
-  }
-  void UpdatePosition(Object &object) {
-    if (map_.find(object.key) == map_.end()) return;
-    map_[object.key].pos = object.pos;
   }
  private:
   std::unordered_map<size_t, struct Attributes> map_;
 }; // class Drawer
+
+class Collision {
+ public:
+  struct Attributes {
+    enum Type {
+      AABB
+    };
+    Type type = AABB;
+    union {
+      struct {
+        float w;
+        float h;
+      };
+      struct {
+        float r;
+      };
+    } traits;
+    /* Pointer back to the object */
+    Object *obj;
+  };
+  void Register(Object &object) {
+    map_[object.key] = Attributes();
+    map_[object.key].obj = &object;
+  }
+  void Register(Object &object, struct Attributes attr) {
+    map_[object.key] = attr;
+    map_[object.key].obj = &object;
+  }
+  void Unregister(Object &object) {
+    if (map_.find(object.key) == map_.end()) return;
+    map_.erase(object.key);
+  }
+  bool CheckOverlap(const Object &a, const Object &b) {
+    /* Check both objects are registered in the subsystem */
+    if (map_.find(a.key) == map_.end()) return false;
+    if (map_.find(b.key) == map_.end()) return false;
+    /* Get their attributes */
+    struct Attributes *at = &map_[a.key];
+    struct Attributes *bt = &map_[b.key];
+    /* Call appropriate overlap function */
+    if (at->type == Attributes::AABB && bt->type == Attributes::AABB)
+      return AabbOverlap(
+        at->traits.w, at->traits.h, at->obj->pos,
+        bt->traits.w, bt->traits.h, bt->obj->pos
+      );
+  }
+ private:
+  bool AabbOverlap(float w1, float h1, v2d pos1, float w2, float h2, v2d pos2) {
+    return (pos1.x - w1) <= (pos2.x + w2) &&
+           (pos1.x + w1) >= (pos2.x - w2) &&
+           (pos1.y - h1) <= (pos2.y + h2) &&
+           (pos1.y + h1) >= (pos2.y - h2);
+  }
+  std::unordered_map<size_t, struct Attributes> map_;
+}; // class Collision
 
 int main(int argv, char** args) {
   /* Initialize */
   Object ship;
   Object bullet;
   Object enemies[256];
+  Object souls[256];
 
   Input input;
 
   Drawer drawer;
+
+  Collision collision;
 
   /* Set up SDL */
   sdl::Initialize();
@@ -304,9 +360,10 @@ int main(int argv, char** args) {
 
   /* Register game objects with the Drawer */
   drawer.Register(ship);
+  drawer.Register(souls[0]);
 
   for (;;) {
-    /* Get events from SDLs */
+    /* Get events from SDL's event system */
     if (sdl::GetEvents(input)) return 0;
 
     /*** Update objects ***/
@@ -316,12 +373,11 @@ int main(int argv, char** args) {
     if (input.down.held) ++ship.pos.y;
     if (input.left.held) --ship.pos.x;
     if (input.right.held) ++ship.pos.x;
-    
+
+    /* first lost soul */
+
     /* Clear transient state for buttons */
     input.AtFrameEnd();
-
-    /* Update object metadata in the Drawer */
-    drawer.UpdatePosition(ship);
 
     /* Draw all the objects */
     drawer.Draw();
