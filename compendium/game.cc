@@ -86,9 +86,19 @@ struct Object {
 struct Input {
   struct Button {
     bool up = false;
-    bool down = false;
+    bool pressed = false;
     bool held = false;
   };
+
+  Button *buttons[6];
+  Button up;
+  Button down;
+  Button left;
+  Button right;
+  Button space;
+  Button lmb;
+
+  v2d cursor;
 
   Input() {
     buttons[0] = &up;
@@ -96,22 +106,16 @@ struct Input {
     buttons[2] = &left;
     buttons[3] = &right;
     buttons[4] = &space;
+    buttons[5] = &lmb;
   }
 
   void AtFrameEnd() {
     /* Clear the transient states */
     for (Button *button : buttons) {
-      button->down = false;
+      button->pressed = false;
       button->up = false;
     }
   }
-
-  Button *buttons[5];
-  Button up;
-  Button down;
-  Button left;
-  Button right;
-  Button space;
 };
 
 namespace sdl {
@@ -127,38 +131,47 @@ const int kWindowY = 600;
  * into the Input struct. Disentangles our input system from that of
  * SDL. */
 class EventToInput {
+ private:
+  enum Buttons {
+    kBaseScancodes = 284,
+    kMaxScancodes = 286
+  };
+  Input::Button *keycode_map_[Buttons::kMaxScancodes] = {0};
  public:
-  void RegisterButton(SDL_Scancode sc, Input::Button &button) {
-    keycode_map_[(int)sc] = &button;
+  /* 
+   * Define "scancodes" for mouse buttons, so that we can register them 
+   * using the same interface. 
+   */
+  const static int SDL_SCANCODE_LMB = Buttons::kBaseScancodes;
+  const static int SDL_SCANCODE_RMB = Buttons::kBaseScancodes + 1;
+  void RegisterButton(int sc, Input::Button &button) {
+    keycode_map_[sc] = &button;
   }
-  void TranslateKeyDown(SDL_Scancode sc) {
+  void TranslateKeyDown(int sc) {
     /* Ignore unbound keypresses */
-    if (!keycode_map_[(int)sc]) return;
+    if (!keycode_map_[sc]) return;
 
-    keycode_map_[(int)sc]->up = false;
+    keycode_map_[sc]->up = false;
     
     /* If the button's already held, don't set down */
-    if (keycode_map_[(int)sc]->held) {
-      keycode_map_[(int)sc]->down = false;
+    if (keycode_map_[sc]->held) {
+      keycode_map_[sc]->pressed = false;
       return;
     }
 
     /* Else set down and held */
-    keycode_map_[(int)sc]->down = true;
-    keycode_map_[(int)sc]->held = true;
+    keycode_map_[sc]->pressed = true;
+    keycode_map_[sc]->held = true;
   }
-  void TranslateKeyUp(SDL_Scancode sc) {
+  void TranslateKeyUp(int sc) {
     /* Ignore unbound keypresses */
-    if (!keycode_map_[(int)sc]) return;
+    if (!keycode_map_[sc]) return;
 
     /* Unset held and down, and set up */
-    keycode_map_[(int)sc]->down = false;
-    keycode_map_[(int)sc]->held = false;
-    keycode_map_[(int)sc]->up = true;
+    keycode_map_[sc]->pressed = false;
+    keycode_map_[sc]->held = false;
+    keycode_map_[sc]->up = true;
   }
- private:
-  const static int kButtons = 284;
-  Input::Button *keycode_map_[kButtons] = {0};
 };
 
 /* Static object that translates from SDL events to inputs */
@@ -183,7 +196,7 @@ void Initialize() {
   }
 
   // Constrain mouse to screen
-  SDL_SetRelativeMouseMode(SDL_TRUE);
+  // SDL_SetRelativeMouseMode(SDL_TRUE);
 
   sdl_surface = SDL_GetWindowSurface(sdl_window);
   if (!sdl_surface) {
@@ -200,6 +213,7 @@ void SetInput(Input &input) {
   event_to_input.RegisterButton(SDL_SCANCODE_D, input.right);
   event_to_input.RegisterButton(SDL_SCANCODE_W, input.up);
   event_to_input.RegisterButton(SDL_SCANCODE_SPACE, input.space);
+  event_to_input.RegisterButton(EventToInput::SDL_SCANCODE_LMB, input.lmb);
 }
 
 /* Update our buttons/window state if there's anything in the event queue */
@@ -211,10 +225,14 @@ int GetEvents(Input &input) {
       case SDL_QUIT:
         return -1;
       case SDL_MOUSEMOTION:
+        input.cursor.x = sdl_event.motion.x;
+        input.cursor.y = sdl_event.motion.y;
         break;
       case SDL_MOUSEBUTTONDOWN:
+        event_to_input.TranslateKeyDown(EventToInput::SDL_SCANCODE_LMB);
         break;
       case SDL_MOUSEBUTTONUP:
+        event_to_input.TranslateKeyUp(EventToInput::SDL_SCANCODE_LMB);
         break;
       case SDL_KEYDOWN:
         event_to_input.TranslateKeyDown(sdl_event.key.keysym.scancode);
@@ -286,13 +304,15 @@ class Drawer {
   std::unordered_map<size_t, struct Attributes> map_;
 }; // class Drawer
 
-class Collision {
+class Overlap {
  public:
   struct Attributes {
     enum Type {
-      AABB
+      AABB,
+      Circle
     };
-    Type type = AABB;
+    Type type = Circle;
+    /* type-specific traits; width and height for aabb, radius for circle */
     union {
       struct {
         float w;
@@ -317,7 +337,7 @@ class Collision {
     if (map_.find(object.key) == map_.end()) return;
     map_.erase(object.key);
   }
-  bool CheckOverlap(const Object &a, const Object &b) {
+  bool Check(const Object &a, const Object &b) {
     /* Check both objects are registered in the subsystem */
     if (map_.find(a.key) == map_.end()) return false;
     if (map_.find(b.key) == map_.end()) return false;
@@ -326,20 +346,49 @@ class Collision {
     struct Attributes *bt = &map_[b.key];
     /* Call appropriate overlap function */
     if (at->type == Attributes::AABB && bt->type == Attributes::AABB)
-      return AabbOverlap(
+      return AabbAabb(
         at->traits.w, at->traits.h, at->obj->pos,
         bt->traits.w, bt->traits.h, bt->obj->pos
       );
+    if (at->type == Attributes::Circle && bt->type == Attributes::Circle)
+      return CircleCircle(
+        at->traits.r, at->obj->pos,
+        bt->traits.r, bt->obj->pos
+      );
   }
  private:
-  bool AabbOverlap(float w1, float h1, v2d pos1, float w2, float h2, v2d pos2) {
+  /* type-type overlap functions */
+  bool AabbAabb(float w1, float h1, v2d pos1, float w2, float h2, v2d pos2) {
     return (pos1.x - w1) <= (pos2.x + w2) &&
            (pos1.x + w1) >= (pos2.x - w2) &&
            (pos1.y - h1) <= (pos2.y + h2) &&
            (pos1.y + h1) >= (pos2.y - h2);
   }
+  bool CircleCircle(float r1, v2d pos1, float r2, v2d pos2) {
+    return pos1.Distance(pos2) < (r1 + r2);
+  }
+
   std::unordered_map<size_t, struct Attributes> map_;
-}; // class Collision
+}; // class Overlap
+
+/* Pulled from https://allenchou.net/2015/04/game-math-precise-control-over-numeric-springing/ */
+void Spring(float &x, float &v, float xt, float zeta, float omega, float h) {
+  float f = 1.0f + 2.0f * h * zeta * omega;
+  float oo = omega * omega;
+  float hoo = h * oo;
+  float hhoo = h * hoo;
+  float detInv = 1.0f / (f + hhoo);
+  float detX = f * x + h * v + hhoo * xt;
+  float detV = v + hoo * (xt - x);
+  x = detX * detInv;
+  v = detV * detInv;
+}
+
+/* ditto for 2d vectors */
+void Spring(v2d &i, v2d &v, v2d t, float zeta, float omega, float h) {
+  Spring(i.x, v.x, t.x, zeta, omega, h);
+  Spring(i.y, v.y, t.y, zeta, omega, h);
+}
 
 int main(int argv, char** args) {
   /* Initialize */
@@ -347,12 +396,13 @@ int main(int argv, char** args) {
   Object bullet;
   Object enemies[256];
   Object souls[256];
+  Object mouse;
 
   Input input;
 
   Drawer drawer;
 
-  Collision collision;
+  Overlap overlap;
 
   /* Set up SDL */
   sdl::Initialize();
@@ -360,21 +410,43 @@ int main(int argv, char** args) {
 
   /* Register game objects with the Drawer */
   drawer.Register(ship);
-  drawer.Register(souls[0]);
+
+  /* start the ship in the middle of the screen */
+  v2d center_of_screen = { sdl::kWindowX / 2, sdl::kWindowY / 2 }; 
+  ship.pos = center_of_screen;
+
+  /* When lmb is pressed, remember offset from these positions */
+  v2d init_mouse_pos;
+  v2d init_ship_pos;
+
+  /* Motion variables for the ship */
+  v2d vel;
 
   for (;;) {
     /* Get events from SDL's event system */
-    if (sdl::GetEvents(input)) return 0;
+    if (sdl::GetEvents(input)) break;
 
     /*** Update objects ***/
 
-    /* move the ship */
-    if (input.up.held) --ship.pos.y;
-    if (input.down.held) ++ship.pos.y;
-    if (input.left.held) --ship.pos.x;
-    if (input.right.held) ++ship.pos.x;
+    if (input.lmb.pressed) {
+      init_mouse_pos = input.cursor;
+      init_ship_pos = ship.pos;
+      vel = { 0.0, 0.0 };
+    }
 
-    /* first lost soul */
+    if (input.lmb.held) {
+      v2d relative_mouse_offset = input.cursor - init_mouse_pos;
+      v2d prev_ship_pos = ship.pos;
+      v2d goal_ship_pos =
+        init_ship_pos +
+        relative_mouse_offset /
+        (prev_ship_pos.Distance(center_of_screen) / 32.0 + 1.0);
+      Spring(ship.pos, vel, goal_ship_pos, 0.23, 8.0 * 3.14159, 0.016);
+    } else {
+      Spring(ship.pos, vel, center_of_screen, 0.23, 8.0 * 3.14159, 0.016);
+    }
+
+    /**********************/
 
     /* Clear transient state for buttons */
     input.AtFrameEnd();
