@@ -14,12 +14,18 @@ struct v2d {
     x = _x;
     y = _y;
   }
+  float Dot(const v2d &o) {
+    return x * o.x + y * o.y;
+  }
   float Distance(const v2d &o) {
     float dist;
     dist  = (x - o.x) * (x - o.x);
     dist += (y - o.y) * (y - o.y);
     dist = sqrt(dist);
     return dist;
+  }
+  float SqrMagnitude() {
+    return x * x + y * y;
   }
   float Magnitude() {
     return sqrt(x * x + y * y);
@@ -124,8 +130,8 @@ namespace sdl {
 SDL_Surface *sdl_surface;
 SDL_Renderer *sdl_renderer;
 SDL_Window *sdl_window;
-const int kWindowX = 800;
-const int kWindowY = 600;
+const int kWindowX = 768;
+const int kWindowY = 432;
 
 /* EventToInput encapsulates translation of events from event loop
  * into the Input struct. Disentangles our input system from that of
@@ -260,12 +266,13 @@ void SetColor(int r, int g, int b) {
   SDL_SetRenderDrawColor(sdl_renderer, r, g, b, 255);
 }
 
-void DrawRect(v2d pos) {
+void DrawRect(v2d pos, float side) {
   SDL_Rect rect;
-  rect.x = pos.x - 10;
-  rect.y = pos.y - 10;
-  rect.w = 20;
-  rect.h = 20;
+  int half = side / 2;
+  rect.x = pos.x - half;
+  rect.y = pos.y - half;
+  rect.w = side;
+  rect.h = side;
   SDL_RenderDrawRect(sdl_renderer, &rect);
 }
 
@@ -277,6 +284,8 @@ class Drawer {
     uint8_t r = 255;
     uint8_t g = 255;
     uint8_t b = 255;
+    float size = 20;
+    bool enabled = true;
     /* Pointer back to the object */
     Object *obj;
   };
@@ -284,19 +293,33 @@ class Drawer {
   Drawer() {
     map_.reserve(512);
   }
+  /* Default register */
   void Register(Object &object) {
     map_[object.key] = Attributes();
+    map_[object.key].obj = &object;
+  }
+  void Register(Object &object, struct Attributes attr) {
+    map_[object.key] = attr;
     map_[object.key].obj = &object;
   }
   void Unregister(Object &object) {
     if (map_.find(object.key) == map_.end()) return;
     map_.erase(object.key);
   }
+  void Enable(Object &o) {
+    if (map_.find(o.key) == map_.end()) return;
+    map_[o.key].enabled = true;
+  }
+  void Disable(Object &o) {
+    if (map_.find(o.key) == map_.end()) return;
+    map_[o.key].enabled = false;
+  }
   void Draw() {
     sdl::StartDraw();
     for (const auto &[_, attr] : map_) {
+      if (!attr.enabled) continue;
       sdl::SetColor(attr.r, attr.g, attr.b);
-      sdl::DrawRect(attr.obj->pos);
+      sdl::DrawRect(attr.obj->pos, attr.size);
     }
     sdl::EndDraw();
   }
@@ -371,6 +394,32 @@ class Overlap {
   std::unordered_map<size_t, struct Attributes> map_;
 }; // class Overlap
 
+class Update {
+ public:
+  struct Attributes {
+    void (*func)(void *ctx);
+    void *ctx;
+    bool enabled = true;
+  };
+  Update() {
+    map_.reserve(512);
+  }
+  void Register(Object &o, Attributes attr) {
+    map_[o.key] = attr;
+  }
+  void Enable(Object &o) {
+    if (map_.find(o.key) == map_.end()) return;
+    map_[o.key].enabled = true;
+  }
+  void Disable(Object &o) {
+    if (map_.find(o.key) == map_.end()) return;
+    map_[o.key].enabled = false;
+  }
+ private:
+  /* Map holds update functions and contexts */
+  std::unordered_map<size_t, struct Attributes> map_;
+}; // class Update
+
 /* Pulled from https://allenchou.net/2015/04/game-math-precise-control-over-numeric-springing/ */
 void Spring(float &x, float &v, float xt, float zeta, float omega, float h) {
   float f = 1.0f + 2.0f * h * zeta * omega;
@@ -390,6 +439,21 @@ void Spring(v2d &i, v2d &v, v2d t, float zeta, float omega, float h) {
   Spring(i.y, v.y, t.y, zeta, omega, h);
 }
 
+void Verlet(float &x, float xp, float a, float h) {
+  float xn = x;
+  x = 2 * xn - xp + h * h * a;
+}
+
+void SemiImplicitEuler(float &x, float &v, float a, float h) {
+  v = v + a * h;
+  x = x + v * h;
+}
+
+void SemiImplicitEuler(v2d &pos, v2d &vel, v2d a, float h) {
+  SemiImplicitEuler(pos.x, vel.x, a.x, h);
+  SemiImplicitEuler(pos.y, vel.y, a.y, h);
+}
+
 int main(int argv, char** args) {
   /* Initialize */
   Object ship;
@@ -404,23 +468,46 @@ int main(int argv, char** args) {
 
   Overlap overlap;
 
+  Update update;
+
   /* Set up SDL */
   sdl::Initialize();
   sdl::SetInput(input);
 
   /* Register game objects with the Drawer */
-  drawer.Register(ship);
+  struct Drawer::Attributes attr;
+  attr.size = 20;
+  attr.r = 200;
+  attr.g = 150;
+  attr.b = 0;
+  drawer.Register(ship, attr);
+
+  /* Reset the attributes for the bullet */
+  attr = Drawer::Attributes();
+  attr.size = 40;
+  drawer.Register(bullet, attr);
+  drawer.Disable(bullet);
 
   /* start the ship in the middle of the screen */
   v2d center_of_screen = { sdl::kWindowX / 2, sdl::kWindowY / 2 }; 
   ship.pos = center_of_screen;
+  bullet.pos = center_of_screen;
 
   /* When lmb is pressed, remember offset from these positions */
   v2d init_mouse_pos;
   v2d init_ship_pos;
-
   /* Motion variables for the ship */
   v2d vel;
+  v2d max_vel = { 0.0, 0.0 };
+  /* Whether the ship was far enough from the center of the screen to trigger a bullet */
+  bool bullet_is_armed = false;
+
+  /* Motion variables for the bullet */
+  v2d bullet_vel;
+
+  /* Booleans as stand-ins for an object handling system */
+  bool bullet_is_active = false;
+  bool ship_is_active = true;
 
   for (;;) {
     /* Get events from SDL's event system */
@@ -428,22 +515,70 @@ int main(int argv, char** args) {
 
     /*** Update objects ***/
 
-    if (input.lmb.pressed) {
-      init_mouse_pos = input.cursor;
-      init_ship_pos = ship.pos;
-      vel = { 0.0, 0.0 };
+    if (ship_is_active) {
+      if (input.lmb.pressed) {
+        init_mouse_pos = input.cursor;
+        init_ship_pos = ship.pos;
+        vel = { 0.0, 0.0 };
+      }
+
+      if (input.lmb.held) {
+        v2d relative_mouse_offset = input.cursor - init_mouse_pos;
+        v2d prev_ship_pos = ship.pos;
+        float distance_to_center =
+          prev_ship_pos.Distance(center_of_screen);
+        v2d goal_ship_pos =
+          init_ship_pos +
+          relative_mouse_offset /
+          (distance_to_center / 64.0 + 1.0);
+        Spring(ship.pos, vel, goal_ship_pos, 0.28, 8.0 * 3.14159, 0.016);
+
+        if (distance_to_center > 20.0)
+          if (!bullet_is_active)
+            bullet_is_armed = true;
+        
+        if (bullet_is_armed) {
+          if (abs(vel.x) > abs(max_vel.x))
+            max_vel.x = vel.x;
+          if (abs(vel.y) > abs(max_vel.y))
+            max_vel.y = vel.y;
+        }
+      } else {
+        Spring(ship.pos, vel, center_of_screen, 0.21, 8.0 * 3.14159, 0.016);
+
+        /* Check if we're in range of the center. If so, initialize bullet */
+        float distance_to_center = ship.pos.Distance(center_of_screen);
+        if (distance_to_center < 20.0)
+          if (bullet_is_armed)
+            if (!bullet_is_active) {
+              bullet_is_active = true;
+              bullet_is_armed = false;
+              bullet_vel = -max_vel;
+              drawer.Enable(bullet);
+            }
+      }
     }
 
-    if (input.lmb.held) {
-      v2d relative_mouse_offset = input.cursor - init_mouse_pos;
-      v2d prev_ship_pos = ship.pos;
-      v2d goal_ship_pos =
-        init_ship_pos +
-        relative_mouse_offset /
-        (prev_ship_pos.Distance(center_of_screen) / 32.0 + 1.0);
-      Spring(ship.pos, vel, goal_ship_pos, 0.23, 8.0 * 3.14159, 0.016);
-    } else {
-      Spring(ship.pos, vel, center_of_screen, 0.23, 8.0 * 3.14159, 0.016);
+    if (bullet_is_active) {
+      v2d vec_to_center = center_of_screen - bullet.pos;
+
+      /* Bullet should travel in arc */
+      v2d acc = vec_to_center.Normalized() * 400.0;
+
+      /* Hack for when bullet is in exact center of screen */
+      if (vec_to_center.SqrMagnitude() < 1.0) acc = { 0.0, 0.0 };
+
+      SemiImplicitEuler(bullet.pos, bullet_vel, acc, 0.016);
+
+      /* Check if bullet is in range of center -- if yes, then disable */
+      float distance_to_center = vec_to_center.Magnitude();
+      // if (distance_to_center < 4.0) {
+      //   v2d center_to_here = bullet.pos - center_of_screen;
+      //   if (bullet_vel.Dot(center_to_here) < 0) {
+      //     bullet_is_active = false;
+      //     drawer.Disable(bullet);
+      //   } 
+      // }
     }
 
     /**********************/
