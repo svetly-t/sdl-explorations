@@ -21,12 +21,11 @@ struct v2d {
   float Cross(const v2d &o) {
     return x * o.y - y * o.x;
   }
+  float SqrDistance(const v2d &o) {
+    return (x - o.x) * (x - o.x) + (y - o.y) * (y - o.y);
+  }
   float Distance(const v2d &o) {
-    float dist;
-    dist  = (x - o.x) * (x - o.x);
-    dist += (y - o.y) * (y - o.y);
-    dist = sqrt(dist);
-    return dist;
+    return sqrt(SqrDistance(o));
   }
   float SqrMagnitude() {
     return x * x + y * y;
@@ -36,7 +35,10 @@ struct v2d {
   }
   v2d Normalized() {
     float m = Magnitude();
-    return v2d(x / m, y / m );
+    /* Can't normalize a zero-length vector */
+    if (m == 0.0)
+      return { 0.0, 0.0 };
+    return v2d(x / m, y / m);
   }
   v2d Project(v2d axis) {
     if (axis.SqrMagnitude() == 0.0)
@@ -304,22 +306,48 @@ void DrawRect(v2d pos, float side) {
   SDL_RenderDrawRect(sdl_renderer, &rect);
 }
 
-void DrawRay(v2d pos, v2d ray) {
-  const float kRoot2Over2 = 0.70711;
+/* Draw a rectangle with the top-right corner pointing at "corner" */
+void DrawRect(v2d pos, float side, v2d corner) {
+  const float kRoot2 = 1.41421356;
+  float diag = side / 2.0 * kRoot2;
+  corner = corner.Normalized();
+  corner *= diag;
   
+  v2d perpen = { -corner.y, corner.x };
+  SDL_Point pts[5];
+  pts[0].x = pts[4].x = pos.x + corner.x;
+  pts[0].y = pts[4].y = pos.y + corner.y;
+  pts[1].x = pos.x - perpen.x;
+  pts[1].y = pos.y - perpen.y;
+  pts[2].x = pos.x - corner.x;
+  pts[2].y = pos.y - corner.y;
+  pts[3].x = pos.x + perpen.x;
+  pts[3].y = pos.y + perpen.y;
+  SDL_RenderDrawLines(sdl_renderer, pts, 5);
+}
+
+void DrawLine(v2d pos, v2d ray, bool nub) {
+  const float kNibLength = 10.0;
+
   SDL_Point pts[3];
   pts[0].x = pos.x;
   pts[0].y = pos.y;
   pts[1].x = pos.x + ray.x;
   pts[1].y = pos.y + ray.y;
-  
+
   ray = ray.Normalized();
   v2d tangent = { ray.y, -ray.x };
 
-  pts[2].x = pts[1].x + tangent.x * kRoot2Over2;
-  pts[2].y = pts[1].y + tangent.y * kRoot2Over2;
+  ray *= kNibLength;
+  pts[2] = pts[1];
+  pts[2].x -= ray.x;
+  pts[2].y -= ray.y;
+  pts[2].x += tangent.x * kNibLength;
+  pts[2].y += tangent.y * kNibLength;
 
-  SDL_RenderDrawLines(sdl_renderer, pts, 2);
+  int count = 2 + nub;
+
+  SDL_RenderDrawLines(sdl_renderer, pts, count);
 }
 
 /* Get a random uint32_t using ticks since start */
@@ -337,13 +365,15 @@ class Drawer {
     uint8_t b = 255;
     float size = 20;
     bool enabled = true;
+    /* In lieu of an angle, use a vector for rotation */
+    v2d point_at = { 1.0, 0.0 };
     /* Pointer back to the object */
-    Object *obj;
+    Object *obj = nullptr;
   };
 
   Drawer() {
     map_.reserve(512);
-    debug_.reserve(512);
+    lines_.reserve(512);
   }
   /* Default register */
   void Register(Object &object) {
@@ -366,32 +396,41 @@ class Drawer {
     if (map_.find(o.key) == map_.end()) return;
     map_[o.key].enabled = false;
   }
+  void PointAt(Object &o, v2d dir) {
+    if (map_.find(o.key) == map_.end()) return;
+    map_[o.key].point_at = dir;
+  }
   void Draw() {
     sdl::StartDraw();
+    for (const LineAttributes &l : lines_) {
+      sdl::SetColor(l.attr.r, l.attr.g, l.attr.b);
+      sdl::DrawLine(l.pos, l.vec, l.nub);
+    }
     for (const auto &[_, attr] : map_) {
       if (!attr.enabled) continue;
       sdl::SetColor(attr.r, attr.g, attr.b);
-      sdl::DrawRect(attr.obj->pos, attr.size);
+      sdl::DrawRect(attr.obj->pos, attr.size, attr.point_at);
     }
-    for (const Debug &d : debug_) {
-      sdl::SetColor(100, 255, 230);
-      sdl::DrawRay(d.pos, d.vec);
-    }
-    debug_.clear();
+    lines_.clear();
     sdl::EndDraw();
   }
-  void DebugRay(v2d pos, v2d ray) {
-    debug_.push_back({ pos, ray });
+  void Ray(v2d pos, v2d ray, struct Attributes attr) {
+    lines_.push_back({ pos, ray, true, attr });
+  }
+  void Line(v2d pos, v2d vec, struct Attributes attr) {
+    lines_.push_back({ pos, vec, false, attr });
   }
  private:
   std::unordered_map<size_t, struct Attributes> map_;
   
-  /* Struct for holding debug objects -- just rays for now */
-  struct Debug {
+  /* Struct for holding lines */
+  struct LineAttributes {
     v2d pos;
     v2d vec;
+    bool nub;
+    struct Attributes attr;
   };
-  std::vector<struct Debug> debug_;
+  std::vector<struct LineAttributes> lines_;
 }; // class Drawer
 
 class Overlap {
@@ -446,7 +485,7 @@ class Overlap {
         bt->traits.r, bt->obj->pos
       );
   }
- private:
+
   /* type-type overlap functions */
   bool AabbAabb(float w1, float h1, v2d pos1, float w2, float h2, v2d pos2) {
     return (pos1.x - w1) <= (pos2.x + w2) &&
@@ -458,6 +497,7 @@ class Overlap {
     return pos1.Distance(pos2) < (r1 + r2);
   }
 
+ private:
   std::unordered_map<size_t, struct Attributes> map_;
 }; // class Overlap
 
@@ -526,11 +566,13 @@ float Lerp(float x, float y, float p) {
   return x + (y - x) * p;
 }
 
+/* Interpolate from zero to one according to h */
+float InvTween(float h, float scale) {
+  return 1.0 - 1.0 / (h * scale + 1.0);
+}
+
 int main(int argv, char** args) {
   /* Initialize */
-  Object ship;
-  Object bullet;
-
   Input input;
 
   Drawer drawer;
@@ -543,41 +585,74 @@ int main(int argv, char** args) {
   sdl::Initialize();
   sdl::SetInput(input);
 
-  /* Register game objects with the Drawer */
-  struct Drawer::Attributes attr;
+  v2d center_of_screen = { sdl::kWindowX / 2, sdl::kWindowY / 2 }; 
+
+  /* When lmb is pressed, remember offset from these positions */
+  v2d init_mouse_pos;
+
+  /* Oh you're gonna love this */
+  float hitstop_timer = 0.0;
+
+  /*** Bullet initialization ***/
+
+  struct Bullet {
+    Object obj;
+    bool is_active = false;
+    
+    v2d vel;
+    v2d rot;
+    float timer;
+    float theta;
+    float ground;
+  };
+  Bullet bullet;
+
+  /* Reset bullet attributes with the Drawer */
+  Drawer::Attributes attr = Drawer::Attributes();
+  attr.size = 40;
+  drawer.Register(bullet.obj, attr);
+  drawer.Disable(bullet.obj);
+
+  /*** Player initialization ***/
+
+  struct Ship {
+    Object obj;
+    bool is_active = true;
+
+    enum State {
+      kMoving,
+      kAiming,
+      kThrowing
+    };
+    State state;
+
+    /* Motion variables */
+    const float kSpeed = 120.0;
+    float timer;
+    v2d acc;
+    v2d vel;
+    v2d pos;
+
+    /* Rotation variables */
+    v2d rot_vel;
+    v2d rot;
+  };
+  Ship ship;
+  ship.state = Ship::kMoving;
+  ship.acc = { 0.0, 0.0 };
+  ship.vel = { 0.0, 0.0 };
+  ship.pos = center_of_screen;
+  ship.rot_vel = { 0.0, 0.0 };
+  ship.rot = { 1.0, 0.0 };
+  ship.timer = 0.0;
+
+  /* Register ship attributes with the Drawer */
+  attr = Drawer::Attributes();
   attr.size = 20;
   attr.r = 200;
   attr.g = 150;
   attr.b = 0;
-  drawer.Register(ship, attr);
-
-  /* Reset the attributes for the bullet */
-  attr = Drawer::Attributes();
-  attr.size = 40;
-  drawer.Register(bullet, attr);
-  drawer.Disable(bullet);
-
-  /* start the ship in the middle of the screen */
-  v2d center_of_screen = { sdl::kWindowX / 2, sdl::kWindowY / 2 }; 
-  ship.pos = center_of_screen;
-  bullet.pos = center_of_screen;
-
-  /* When lmb is pressed, remember offset from these positions */
-  v2d init_mouse_pos;
-  v2d init_ship_pos;
-  /* Motion variables for the ship */
-  v2d vel;
-  v2d vel_max = { 0.0, 0.0 };
-  /* Whether the ship was far enough from the center of the screen to trigger a bullet */
-  bool bullet_is_armed = false;
-
-  /* Motion variables for the bullet */
-  v2d bullet_vel;
-
-  /* Booleans as stand-ins for an object handling system */
-  bool bullet_is_active = false;
-  bool ship_is_active = true;
-  bool enemy_is_active[256] = {0};
+  drawer.Register(ship.obj, attr);
 
   /*** Enemy info initialization ***/
   
@@ -633,135 +708,189 @@ int main(int argv, char** args) {
 
     /*** Update objects ***/
 
-    if (ship_is_active) {
-      if (input.lmb.pressed) {
-        init_mouse_pos = input.cursor;
-        init_ship_pos = ship.pos;
-        vel = { 0.0, 0.0 };
-      }
+    if (hitstop_timer > 0.0) {
+      hitstop_timer -= 0.016;
+    } else {
+      if (ship.is_active) {
+        if (ship.state == Ship::kMoving) {
+          /* Determine the goal velocity for this frame */
+          v2d v = { 0.0, 0.0 };
+          if (input.up.held)
+            v.y -= 1.0;
+          if (input.down.held)
+            v.y += 1.0; 
+          if (input.right.held)
+            v.x += 1.0;
+          if (input.left.held)
+            v.x -= 1.0;
+          v = v.Normalized() * ship.kSpeed;
 
-      v2d axis = ship.pos - center_of_screen;
+          /* Use spring to interpolate velocity */
+          Spring(ship.vel, ship.acc, v, 0.23, 4.0 * 3.14159, 0.016);
+          /* Move the ship */
+          SemiImplicitEuler(ship.pos, ship.vel, {0.0, 0.0}, 0.016);
+          /* Apply cute bounce motion to the visual position of the ship */
+          const float kSqrMaxShipSpeed = ship.kSpeed * ship.kSpeed;
+          const float kBouncePeriodScale = 3.14159 / 2.0 * 7.5;
+          float theta = ship.timer * kBouncePeriodScale;
+          float bounce_scale = ship.vel.SqrMagnitude() / kSqrMaxShipSpeed;
+          v2d bounce = { 0.0, -5.0 };
+          bounce.y *= abs(sin(theta)) * bounce_scale;
+          ship.obj.pos = ship.pos + bounce;
+          /* Rotate the box to neutral position */
+          float lerp_factor = InvTween(ship.timer, 8.0);
+          ship.rot.x = Lerp(ship.rot.x, 1.0, lerp_factor);
+          ship.rot.y = Lerp(ship.rot.y, -1.0, lerp_factor);
+          drawer.PointAt(ship.obj, ship.rot);
+          
+          ship.timer += 0.016;
 
-      if (input.lmb.held) {
-        v2d relative_mouse_offset = input.cursor - init_mouse_pos;
-        v2d prev_ship_vel = vel;
-        v2d prev_ship_pos = ship.pos;
-        float distance_to_center =
-          prev_ship_pos.Distance(center_of_screen);
-        v2d goal_ship_pos =
-          init_ship_pos +
-          relative_mouse_offset /
-          (distance_to_center / 64.0 + 1.0);
-        Spring(ship.pos, vel, goal_ship_pos, 0.56, 8.0 * 3.14159, 0.016);
+          if (input.lmb.pressed) {
+            /* Store initial position in order to calc. offset */
+            init_mouse_pos = input.cursor;
+            /* Switch to aiming mode */
+            ship.state = Ship::kAiming;
+            /* Drop the bounce offset */
+            ship.obj.pos = ship.pos;
+            /* Reset the state_timer */
+            ship.timer = 0.0;
+          }
+        } else if (ship.state == Ship::kAiming) {
+          v2d relative_mouse_offset = input.cursor - init_mouse_pos;
+          /* Draw the prediction arrow */
+          struct Drawer::Attributes line;
+          line.r = 255;
+          line.g = 225;
+          line.b = 140;
+          drawer.Ray(ship.pos, -relative_mouse_offset, line);
+          /* Rotate the box in the direction of the mouse */
+          Spring(ship.rot, ship.rot_vel, -relative_mouse_offset, 0.23, 4.0 * 3.14159, 0.016);
+          drawer.PointAt(ship.obj, ship.rot);
+          /* Draw the "ground line" for the bullet */
+          float lerp_factor = InvTween(ship.timer, 4.0);
+          float line_length = Lerp(0, sdl::kWindowX, lerp_factor);
+          v2d start = ship.pos;
+          v2d dir = { 0.0, 0.0 };
+          start.x -= line_length;
+          dir.x += line_length * 2.0;
+          line.r = 60;
+          line.g = 60;
+          line.b = 60;
+          drawer.Line(start, dir, line);
 
-        if (distance_to_center > 40.0)
-          if (!bullet_is_active)
-            bullet_is_armed = true;
-      } else {
-        float distance_to_center = axis.Magnitude();
+          ship.timer += 0.016;
 
-        v2d vel_norm = vel.Project(axis);
-        v2d vel_tan = vel.ProjectTangent(axis);
-
-        Spring(ship.pos, vel_norm, center_of_screen, 0.28, 8.0 * 3.14159, 0.016);
-        Spring(ship.pos, vel_tan, center_of_screen, 0.28, 2.0 * 3.14159, 0.016);
-
-        vel = vel_norm + vel_tan;
-
-        drawer.DebugRay(ship.pos, vel_norm);
-        drawer.DebugRay(ship.pos, vel_tan);
-
-        /* If bullet is ready to fire, find the max velocity */
-        if (!bullet_is_active)
-          if (vel.SqrMagnitude() > vel_max.SqrMagnitude())
-            vel_max = vel;
-
-        /* Check if we're in range of the center. If so, initialize bullet */
-        if (distance_to_center < 40.0)
-          if (bullet_is_armed)
-            if (!bullet_is_active) {
-              bullet_is_active = true;
-              bullet_is_armed = false;
-              bullet_vel = vel.Normalized() * vel_max.Magnitude();
-              vel_max = { 0.0, 0.0 };
-              drawer.Enable(bullet);
+          if (input.lmb.up) {
+            /* Initialize bullet if not active */
+            if (!bullet.is_active) {
+              const float kThrowDamp = 1.0;
+              bullet.is_active = true;
+              bullet.vel = -relative_mouse_offset * kThrowDamp;
+              bullet.obj.pos = ship.pos + bullet.vel * 0.016;
+              bullet.rot = { 1.0, 0.0 };
+              bullet.timer = 0.0;
+              bullet.ground = ship.pos.y;
+              drawer.Enable(bullet.obj);
             }
-      }
-    }
-
-    if (bullet_is_active) {
-      v2d axis = ship.pos - center_of_screen;
-
-      Spring(bullet.pos, bullet_vel, center_of_screen, 0, 1.0 * 3.14159, 0.016);
-
-      drawer.DebugRay(bullet.pos, bullet_vel);
-
-      v2d offset_to_ship = bullet.pos - ship.pos;
-    }
-
-    for (size_t e = 0; e < 256; ++e) {
-      if (enemies[e].is_active) {
-        enemies[e].elapsed += 0.016;
-
-        float percent_along_curve =
-          enemies[e].elapsed / enemies[e].expiry;
-
-        float x = Lerp(-1, 1, percent_along_curve);
-        float sign = x < 0 ? -1 : 1;
-
-        enemies[e].t =
-          enemies[e].alpha *
-          (x);//* sign;
-
-        enemies[e].obj.pos =
-          enemies[e].origin +
-          enemies[e].x_axis * enemies[e].t +
-          enemies[e].y_axis * enemies[e].coeff * enemies[e].t * enemies[e].t;
-
-        /* Unregister if enemy traverses the whole path set out for it */
-        if (enemies[e].elapsed > enemies[e].expiry) {
-          enemies[e].is_active = false;
-          drawer.Unregister(enemies[e].obj);
+            /* Switch to moving mode */
+            ship.state = Ship::kMoving;
+            ship.rot_vel = {0.0, 0.0};
+            ship.timer = 0.0;
+          }
         }
-      } else if (enemy_spawn_timer <= 0.0) {
-        /***  found an inactive enemy object -- set it up ***/
-        enemy_spawn_timer = 1.0;
+      }
 
-        /* Clamp random number in range of spawn points */
-        uint32_t r = sdl::Random() % kPoints;
+      if (bullet.is_active) {
+        /* Only move the bullet if it's above the "ground line" */
+        if (bullet.obj.pos.y < bullet.ground) {
+          float kGravity = (bullet.vel.y > 0.0) ? 4e2 : 2e2;
+          SemiImplicitEuler(bullet.obj.pos, bullet.vel, { 0, kGravity }, 0.016);
+        } else {
+          bullet.vel = { 0.0, 0.0 };
+        }
+
+        /* visually rotate the bullet box */
+        const float kRotScale = 0.1;
+        bullet.rot = { (float)cos(bullet.theta), (float)sin(bullet.theta) };
+        drawer.PointAt(bullet.obj, bullet.rot);
+        bullet.theta += 0.016 * abs(bullet.vel.y) * kRotScale;
         
-        /* Pick a set of axes */
-        enemies[e].origin = center_of_screen;
-        enemies[e].y_axis = (enemy_spawn_points[r] - enemies[e].origin).Normalized();
-        enemies[e].x_axis = { enemies[e].y_axis.y, -enemies[e].y_axis.x };
-
-        /* 
-         * Pick a spawn point and use it to calculate coeff
-         * The spawn point must have a positive dot product w/ the axis
-         * (i.e. it is on the same side of the x-axis as en_sp_pt[r])
-         * (also must not be the same as the initial point)
-         */
-        v2d spawn_offset;
-        for (size_t r2 = (r + kSide) % kPoints;;) {
-          if (r2 == r) continue;
-          r2 = (r2 + 1) % kPoints;
-          spawn_offset = enemy_spawn_points[r2] - enemies[e].origin;
-          if (spawn_offset.Dot(enemies[e].y_axis) > 0.0) break;
-        }
-
-        enemies[e].beta = spawn_offset.Dot(enemies[e].y_axis);
-        enemies[e].alpha = spawn_offset.Dot(enemies[e].x_axis);
-        enemies[e].coeff = enemies[e].beta / (enemies[e].alpha * enemies[e].alpha);
-        enemies[e].elapsed = 0.0;
-        enemies[e].expiry = 4.0;
-
-        enemies[e].is_active = true;
-        drawer.Register(enemies[e].obj);
+        bullet.timer += 0.016;
       }
-    }
 
-    if (enemy_spawn_timer > 0.0)
-        enemy_spawn_timer -= 0.016;
+      for (size_t e = 0; e < 256; ++e) {
+        if (enemies[e].is_active) {
+          enemies[e].elapsed += 0.016;
+
+          float percent_along_curve =
+            enemies[e].elapsed / enemies[e].expiry;
+
+          float x = Lerp(-1, 1, percent_along_curve);
+          float sign = x < 0 ? -1 : 1;
+
+          enemies[e].t =
+            enemies[e].alpha *
+            (x);
+
+          enemies[e].obj.pos =
+            enemies[e].origin +
+            enemies[e].x_axis * enemies[e].t +
+            enemies[e].y_axis * enemies[e].coeff * enemies[e].t * enemies[e].t;
+
+          bool hit =
+            (!bullet.is_active) ?
+            false :
+            overlap.CircleCircle(10.0, enemies[e].obj.pos, 20.0, bullet.obj.pos);
+
+          /* five-frame hitstop if collision with bullet */
+          if (hit)
+            hitstop_timer = 0.016 * 5;
+
+          /* Unregister if enemy traverses the whole path set out for it (or hit by bullet) */
+          if (enemies[e].elapsed > enemies[e].expiry || hit) {
+            enemies[e].is_active = false;
+            drawer.Unregister(enemies[e].obj);
+          }
+        } else if (enemy_spawn_timer <= 0.0) {
+          /***  found an inactive enemy object -- set it up ***/
+          enemy_spawn_timer = 1.0;
+
+          /* Clamp random number in range of spawn points */
+          uint32_t r = sdl::Random() % kPoints;
+          
+          /* Pick a set of axes */
+          enemies[e].origin = center_of_screen;
+          enemies[e].y_axis = (enemy_spawn_points[r] - enemies[e].origin).Normalized();
+          enemies[e].x_axis = { enemies[e].y_axis.y, -enemies[e].y_axis.x };
+
+          /* 
+          * Pick a spawn point and use it to calculate coeff
+          * The spawn point must have a positive dot product w/ the axis
+          * (i.e. it is on the same side of the x-axis as en_sp_pt[r])
+          * (also must not be the same as the initial point)
+          */
+          v2d spawn_offset;
+          for (size_t r2 = (r + kSide) % kPoints;;) {
+            if (r2 == r) continue;
+            r2 = (r2 + 1) % kPoints;
+            spawn_offset = enemy_spawn_points[r2] - enemies[e].origin;
+            if (spawn_offset.Dot(enemies[e].y_axis) > 0.0) break;
+          }
+
+          enemies[e].beta = spawn_offset.Dot(enemies[e].y_axis);
+          enemies[e].alpha = spawn_offset.Dot(enemies[e].x_axis);
+          enemies[e].coeff = enemies[e].beta / (enemies[e].alpha * enemies[e].alpha);
+          enemies[e].elapsed = 0.0;
+          enemies[e].expiry = 4.0;
+
+          enemies[e].is_active = true;
+          drawer.Register(enemies[e].obj);
+        }
+      }
+
+      if (enemy_spawn_timer > 0.0)
+          enemy_spawn_timer -= 0.016;
+    }
 
     /**********************/
 
