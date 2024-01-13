@@ -157,7 +157,7 @@ struct Input {
 namespace sdl {
 
 /* Static SDL components */
-SDL_Surface *sdl_surface;
+// SDL_Surface *sdl_surface;
 SDL_Renderer *sdl_renderer;
 SDL_Window *sdl_window;
 const int kWindowX = 768;
@@ -234,13 +234,20 @@ void Initialize() {
   // Constrain mouse to screen
   // SDL_SetRelativeMouseMode(SDL_TRUE);
 
-  sdl_surface = SDL_GetWindowSurface(sdl_window);
-  if (!sdl_surface) {
-    std::cout << "No surface " << SDL_GetError() << std::endl;
+  // sdl_surface = SDL_GetWindowSurface(sdl_window);
+  // if (!sdl_surface) {
+  //   std::cout << "No surface " << SDL_GetError() << std::endl;
+  //   abort();
+  // }
+
+  // sdl_renderer = SDL_CreateSoftwareRenderer(sdl_surface);
+
+  sdl_renderer = SDL_CreateRenderer(sdl_window, -1, 0);
+
+  if (IMG_Init(IMG_INIT_PNG) != IMG_INIT_PNG) {
+    std::cout << "could not load dlls for PNG display" << std::endl;
     abort();
   }
-
-  sdl_renderer = SDL_CreateSoftwareRenderer(sdl_surface);
 }
 
 void SetInput(Input &input) {
@@ -282,13 +289,30 @@ int GetEvents(Input &input) {
   return 0;
 }
 
+/* Load a texture from a file and return a SDL_Texture pointer */
+SDL_Texture *LoadTexture(std::string file) {
+  SDL_Surface *surf = IMG_Load(file.c_str());
+  if (!surf)
+    std::cout << "loading img returned error" << std::endl;
+  
+  SDL_Texture *text = SDL_CreateTextureFromSurface(sdl_renderer, surf);
+  if (!text)
+    std::cout << "creating texture failed error: " << SDL_GetError() << std::endl;
+  
+  SDL_FreeSurface(surf);
+  return text;
+}
+
 /* Clear the view buffer, etc. */
 void StartDraw() {
-  SDL_FillRect(sdl_surface, NULL, SDL_MapRGB(sdl_surface->format, 0, 0, 0));
+  // SDL_FillRect(sdl_surface, NULL, SDL_MapRGB(sdl_surface->format, 0, 0, 0));
+  SDL_SetRenderDrawColor(sdl_renderer, 0, 0, 0, 255);
+  SDL_RenderClear(sdl_renderer);
 }
 
 void EndDraw() {
-  SDL_UpdateWindowSurface(sdl_window);
+  // SDL_UpdateWindowSurface(sdl_window);
+  SDL_RenderPresent(sdl_renderer);
 }
 
 /* Set color for the next draw thing */
@@ -347,7 +371,21 @@ void DrawLine(v2d pos, v2d ray, bool nub) {
 
   int count = 2 + nub;
 
-  SDL_RenderDrawLines(sdl_renderer, pts, count);
+  SDL_RenderDrawLines(sdl_renderer, pts, count);  
+}
+
+void DrawTexture(SDL_Texture *texture, v2d dest, v2d source, float h, float w, float theta) {
+  SDL_Rect src_rect;
+  SDL_Rect dst_rect;
+  SDL_RenderCopyEx(
+    sdl_renderer,
+    texture,
+    &src_rect,
+    &dst_rect,
+    theta,
+    nullptr,
+    SDL_FLIP_NONE
+  );
 }
 
 /* Get a random uint32_t using ticks since start */
@@ -359,13 +397,46 @@ uint32_t Random() {
 
 class Drawer {
  public:
+  struct Texture {
+    SDL_Texture *ptr;
+  };
+
+  struct Sprite {
+    struct Texture texture;
+    v2d off;
+    float w;
+    float h;
+    float theta;
+  };
+  void SetSprite(Object &o, std::string filename) {
+    size_t hash = std::hash<std::string>{}(filename);
+
+    if (textures_.find(hash) == textures_.end())
+      LoadTexture(filename, hash);
+    if (map_.find(o.key) == map_.end()) return;
+    
+    map_[o.key].type = Attributes::kSprite;
+    map_[o.key].sprite.texture = textures_[hash];
+  }
+  Sprite *GetSprite(Object &o) {
+    if (map_.find(o.key) == map_.end()) return nullptr;
+    return &map_[o.key].sprite;
+  }
+
   struct Attributes {
+    bool enabled = true;
     uint8_t r = 255;
     uint8_t g = 255;
     uint8_t b = 255;
     float size = 20;
-    bool enabled = true;
-    /* In lieu of an angle, use a vector for rotation */
+    enum Type {
+      kPrimitive,
+      kSprite
+    } type;
+    struct Sprite sprite;
+    /**
+     * Use a vector for rotation when drawing lines
+     */
     v2d point_at = { 1.0, 0.0 };
     /* Pointer back to the object */
     Object *obj = nullptr;
@@ -400,6 +471,9 @@ class Drawer {
     if (map_.find(o.key) == map_.end()) return;
     map_[o.key].point_at = dir;
   }
+  void ClearTransient() {
+    lines_.clear();
+  }
   void Draw() {
     sdl::StartDraw();
     for (const LineAttributes &l : lines_) {
@@ -408,10 +482,15 @@ class Drawer {
     }
     for (const auto &[_, attr] : map_) {
       if (!attr.enabled) continue;
-      sdl::SetColor(attr.r, attr.g, attr.b);
-      sdl::DrawRect(attr.obj->pos, attr.size, attr.point_at);
+      if (attr.type == Attributes::kPrimitive) {
+        sdl::SetColor(attr.r, attr.g, attr.b);
+        sdl::DrawRect(attr.obj->pos, attr.size, attr.point_at);
+      }
+      if (attr.type == Attributes::kSprite) {
+        sdl::SetColor(attr.r, attr.g, attr.b);
+        sdl::DrawTexture(attr.sprite.texture.ptr, attr.obj->pos, attr.sprite.off, attr.sprite.h, attr.sprite.w, attr.sprite.theta);
+      }
     }
-    lines_.clear();
     sdl::EndDraw();
   }
   void Ray(v2d pos, v2d ray, struct Attributes attr) {
@@ -423,7 +502,6 @@ class Drawer {
  private:
   std::unordered_map<size_t, struct Attributes> map_;
   
-  /* Struct for holding lines */
   struct LineAttributes {
     v2d pos;
     v2d vec;
@@ -431,6 +509,16 @@ class Drawer {
     struct Attributes attr;
   };
   std::vector<struct LineAttributes> lines_;
+
+  std::unordered_map<size_t, struct Texture> textures_;
+  void LoadTexture(std::string filename, size_t hash) {
+    struct Texture nt;
+    nt.ptr = sdl::LoadTexture(filename);
+    if (!nt.ptr) {
+      /* On error: Use a default sprite? */
+    }
+    textures_[hash] = nt;
+  }
 }; // class Drawer
 
 class Overlap {
@@ -566,9 +654,17 @@ float Lerp(float x, float y, float p) {
   return x + (y - x) * p;
 }
 
+v2d Lerp(v2d x, v2d xt, float p) {
+  return x + (xt - x) * p;
+}
+
 /* Interpolate from zero to one according to h */
 float InvTween(float h, float scale) {
   return 1.0 - 1.0 / (h * scale + 1.0);
+}
+
+float Deg2Rad(float degrees) {
+  return  degrees / 360.0 * 2.0 * 3.14159;
 }
 
 int main(int argv, char** args) {
@@ -597,21 +693,35 @@ int main(int argv, char** args) {
 
   struct Bullet {
     Object obj;
-    bool is_active = false;
+    bool is_active = true;
     
-    v2d vel;
-    v2d rot;
-    float timer;
-    float theta;
+    enum State {
+      kIdle,
+      kFalling,
+      kGrounded
+    };
+    State state = State::kIdle;
+
+    v2d vel = { 0.0, 0.0 };
+    v2d rot = { 0.0, 0.0 };
+    float timer = 0.0;
+    float theta = 0.0;
     float ground;
+
+    const float kDefaultSpin = 2.0;
+    float spin_magnitude = kDefaultSpin;
+
+    int hits = 0;
   };
   Bullet bullet;
 
   /* Reset bullet attributes with the Drawer */
   Drawer::Attributes attr = Drawer::Attributes();
   attr.size = 40;
+  attr.r = 255;
+  attr.g = 255;
+  attr.b = 255;
   drawer.Register(bullet.obj, attr);
-  drawer.Disable(bullet.obj);
 
   /*** Player initialization ***/
 
@@ -700,6 +810,42 @@ int main(int argv, char** args) {
     }
   }
 
+  /*** Soul initialization ***/
+
+  struct Soul {
+    Object obj;
+    bool is_active = false;
+
+    enum State {
+      kFollowingEnemy,
+      kFollowingBullet,
+      kFollowingShip,
+      kBouncing,
+      kWaiting
+    };
+    State state;
+    Object *follow;
+
+    v2d axis;
+
+    const float kOmega = 2.0 * 3.14159;
+    const float kStopTime = 3.0;
+    v2d pos;
+    v2d vel;
+    v2d acc;
+
+    float timer;
+  };
+  Soul souls[256];
+
+  struct SoulEmitter {
+    v2d position;
+    float initial_speed = 0.0;
+    size_t count = 0;
+    size_t index = 0;
+  };
+  SoulEmitter soul_emitter;
+
   /**********************/
 
   for (;;) {
@@ -723,12 +869,25 @@ int main(int argv, char** args) {
             v.x += 1.0;
           if (input.left.held)
             v.x -= 1.0;
-          v = v.Normalized() * ship.kSpeed;
+          float speed =
+            (bullet.state == Bullet::kIdle) ?
+            ship.kSpeed :
+            ship.kSpeed * 2.0;
+          v = v.Normalized() * speed;
 
           /* Use spring to interpolate velocity */
           Spring(ship.vel, ship.acc, v, 0.23, 4.0 * 3.14159, 0.016);
           /* Move the ship */
           SemiImplicitEuler(ship.pos, ship.vel, {0.0, 0.0}, 0.016);
+          /* If the ship is out of bounds, push it back according to vel */
+          if (ship.pos.x > sdl::kWindowX)
+            ship.pos.x -= ship.vel.x * 0.016;
+          if (ship.pos.x < 0.0)
+            ship.pos.x -= ship.vel.x * 0.016;
+          if (ship.pos.y > sdl::kWindowY)
+            ship.pos.y -= ship.vel.y * 0.016;
+          if (ship.pos.y < 0.0)
+            ship.pos.y -= ship.vel.y * 0.016;
           /* Apply cute bounce motion to the visual position of the ship */
           const float kSqrMaxShipSpeed = ship.kSpeed * ship.kSpeed;
           const float kBouncePeriodScale = 3.14159 / 2.0 * 7.5;
@@ -756,7 +915,10 @@ int main(int argv, char** args) {
             ship.timer = 0.0;
           }
         } else if (ship.state == Ship::kAiming) {
+          const float kThrowDamp = 1.0;
+          
           v2d relative_mouse_offset = input.cursor - init_mouse_pos;
+          
           /* Draw the prediction arrow */
           struct Drawer::Attributes line;
           line.r = 255;
@@ -777,20 +939,23 @@ int main(int argv, char** args) {
           line.g = 60;
           line.b = 60;
           drawer.Line(start, dir, line);
+          /* Increase rotation speed of bullet based on length of mouse offset */
+          bullet.spin_magnitude = relative_mouse_offset.Magnitude() * kThrowDamp;
 
           ship.timer += 0.016;
 
           if (input.lmb.up) {
             /* Initialize bullet if not active */
-            if (!bullet.is_active) {
-              const float kThrowDamp = 1.0;
+            if (bullet.state == Bullet::kIdle) {
               bullet.is_active = true;
               bullet.vel = -relative_mouse_offset * kThrowDamp;
               bullet.obj.pos = ship.pos + bullet.vel * 0.016;
               bullet.rot = { 1.0, 0.0 };
               bullet.timer = 0.0;
+              bullet.theta = 0.0;
               bullet.ground = ship.pos.y;
-              drawer.Enable(bullet.obj);
+              bullet.state = Bullet::kFalling;
+              bullet.hits = 0;
             }
             /* Switch to moving mode */
             ship.state = Ship::kMoving;
@@ -801,20 +966,52 @@ int main(int argv, char** args) {
       }
 
       if (bullet.is_active) {
-        /* Only move the bullet if it's above the "ground line" */
-        if (bullet.obj.pos.y < bullet.ground) {
-          float kGravity = (bullet.vel.y > 0.0) ? 4e2 : 2e2;
-          SemiImplicitEuler(bullet.obj.pos, bullet.vel, { 0, kGravity }, 0.016);
-        } else {
-          bullet.vel = { 0.0, 0.0 };
+        if (bullet.state == Bullet::kFalling || bullet.state == Bullet::kGrounded) {
+          /* Draw the ground line that the bullet's gonna hit */
+          struct Drawer::Attributes line;
+          v2d start = { 0.0, bullet.ground };
+          v2d dir = { sdl::kWindowX, 0.0 };
+          line.r = 60;
+          line.g = 60;
+          line.b = 60;
+          drawer.Line(start, dir, line);
+          /* Spin magnitude is velocity while falling... */
+          bullet.spin_magnitude = bullet.vel.Magnitude();
+          /* Disable the bullet if it overlaps with the ship */
+          bool reunite =
+            ship.is_active &&
+            bullet.vel.y >= 0.0 &&
+            overlap.CircleCircle(10.0, ship.obj.pos, 20.0, bullet.obj.pos);
+          if (reunite) {
+            bullet.state = Bullet::kIdle;
+            bullet.spin_magnitude = bullet.kDefaultSpin;
+          }
         }
 
-        /* visually rotate the bullet box */
+        if (bullet.state == Bullet::kFalling) {
+          /* Bullet kinematics if it's above the "ground line" */
+          float kGravity = (bullet.vel.y > 0.0) ? 4e2 : 2e2;
+          SemiImplicitEuler(bullet.obj.pos, bullet.vel, { 0, kGravity }, 0.016);
+          if (bullet.obj.pos.y > bullet.ground) {
+            soul_emitter.initial_speed = bullet.vel.Magnitude();
+            bullet.state = Bullet::kGrounded;
+            bullet.vel = { 0.0, 0.0 };
+          }
+          /* Reverse direction on x-bounds */
+          if (bullet.obj.pos.x < 0 || bullet.obj.pos.x > sdl::kWindowX)
+            bullet.vel.x = -bullet.vel.x;
+        }
+
+        if (bullet.state == Bullet::kIdle) {
+          bullet.obj.pos = Lerp(bullet.obj.pos, ship.pos, 10.0 * 0.016);
+        }
+
+        /* Spin animation */
         const float kRotScale = 0.1;
         bullet.rot = { (float)cos(bullet.theta), (float)sin(bullet.theta) };
         drawer.PointAt(bullet.obj, bullet.rot);
-        bullet.theta += 0.016 * abs(bullet.vel.y) * kRotScale;
-        
+        bullet.theta += 0.016 * bullet.spin_magnitude * kRotScale;
+
         bullet.timer += 0.016;
       }
 
@@ -837,14 +1034,17 @@ int main(int argv, char** args) {
             enemies[e].x_axis * enemies[e].t +
             enemies[e].y_axis * enemies[e].coeff * enemies[e].t * enemies[e].t;
 
-          bool hit =
-            (!bullet.is_active) ?
-            false :
-            overlap.CircleCircle(10.0, enemies[e].obj.pos, 20.0, bullet.obj.pos);
+          bool hit = false;
+          if (bullet.state == Bullet::kFalling)
+            hit = overlap.CircleCircle(10.0, enemies[e].obj.pos, 20.0, bullet.obj.pos);
 
-          /* five-frame hitstop if collision with bullet */
-          if (hit)
-            hitstop_timer = 0.016 * 5;
+          /* handle collision with bullet */
+          if (hit) {
+            bullet.hits++;
+            soul_emitter.count++;
+            soul_emitter.position = enemies[e].obj.pos;
+            hitstop_timer = 0.2 * bullet.hits;
+          }
 
           /* Unregister if enemy traverses the whole path set out for it (or hit by bullet) */
           if (enemies[e].elapsed > enemies[e].expiry || hit) {
@@ -892,6 +1092,102 @@ int main(int argv, char** args) {
           enemy_spawn_timer -= 0.016;
     }
 
+    /* Let souls animate outside of hitstop (this should be cool) */
+    for (size_t s = 0; s < 256; ++s) {
+      if (!souls[s].is_active) {
+        if (soul_emitter.count <= 0) continue;
+        soul_emitter.count--;
+
+        souls[s].timer = 0.0;
+        souls[s].obj.pos = soul_emitter.position;
+        souls[s].state = Soul::kFollowingBullet;
+        souls[s].follow = &bullet.obj;
+        souls[s].is_active = true;
+        drawer.Register(souls[s].obj);
+      } else {
+        souls[s].timer += 0.016;
+
+        /** handle various soul states **/
+        
+        if (souls[s].state == Soul::kFollowingBullet) {
+          if (bullet.state == Bullet::kIdle) {
+            /* Bullet must have transitioned into Idle b/c it touched ship */
+            souls[s].state = Soul::kFollowingShip;
+            souls[s].follow = &ship.obj;
+          }
+          if (bullet.state == Bullet::kGrounded) {
+            /* Shoot off this soul in a random direction */
+            float radians = Deg2Rad(rand() % 180);
+            float speed = soul_emitter.initial_speed;
+            v2d rnd = { (float)cos(radians), -(float)sin(radians) };
+            souls[s].vel = rnd * speed;
+            souls[s].pos = souls[s].obj.pos;
+            /* Use kStopTime to figure out what the deacceleration should be */
+            float acc = speed / souls[s].kStopTime;
+            souls[s].acc = -rnd * acc; 
+            souls[s].timer = 0.0;
+            souls[s].state = Soul::kBouncing;
+            souls[s].follow = nullptr;
+          }
+        } else if (souls[s].state == Soul::kFollowingEnemy) {
+          v2d pos = souls[s].obj.pos;
+          if (
+            pos.y > sdl::kWindowY ||
+            pos.x > sdl::kWindowX ||
+            pos.y < 0.0 ||
+            pos.x < 0.0
+          ) {
+            souls[s].is_active = false;
+            drawer.Unregister(souls[s].obj);
+          }
+        } else if (souls[s].state == Soul::kFollowingShip) {
+          
+        } else if (souls[s].state == Soul::kBouncing) {
+          /* Check for edges of screen */
+          v2d pos = souls[s].obj.pos;
+          if (
+            pos.y > sdl::kWindowY ||
+            pos.x > sdl::kWindowX ||
+            pos.y < 0.0 ||
+            pos.x < 0.0
+          ) {
+            souls[s].vel = -souls[s].vel;
+            souls[s].acc = -souls[s].vel.Normalized() * souls[s].acc.Magnitude();
+          }
+          /* Slow down */
+          SemiImplicitEuler(souls[s].pos, souls[s].vel, souls[s].acc, 0.016);
+          /* Cut off acceleration if we're nearly stopped */
+          if (souls[s].vel.SqrMagnitude() < 2.0) {
+            souls[s].state == Soul::kWaiting;
+            souls[s].acc = { 0.0, 0.0 };
+          }
+          /* Apply bounce motion to the y pos */
+          const float kPeriodScale = 3.14159 * 2.0 * 1.5;
+          const float kHeightScale = souls[s].vel.Magnitude() / 5.0;
+          float theta = souls[s].timer / souls[s].kStopTime * kPeriodScale;
+          float scale = abs(sin(theta));
+          v2d bounce = { 0.0, -kHeightScale };
+          souls[s].obj.pos = souls[s].pos + bounce * scale;
+        } else if (souls[s].state == Soul::kWaiting) {
+
+        }
+
+        /********************************/
+
+        if (souls[s].follow) {
+          /* Rotate elliptically around the follow center */
+          v2d follow_pos = souls[s].follow->pos;
+          v2d axis_a = { 20.0, -20.0 };
+          v2d axis_b = { -10.0, -10.0 };
+          float tween_factor = InvTween(souls[s].timer, 1.0);
+          float omega = (8.0 - 7.0 * tween_factor) * souls[s].kOmega;
+          follow_pos += axis_a * sin(souls[s].timer * omega);
+          follow_pos += axis_b * cos(souls[s].timer * omega);
+          souls[s].obj.pos = Lerp(souls[s].obj.pos, follow_pos, tween_factor);
+        }
+      }
+    }
+
     /**********************/
 
     /* Clear transient state for buttons */
@@ -899,6 +1195,10 @@ int main(int argv, char** args) {
 
     /* Draw all the objects */
     drawer.Draw();
+
+    /* Drawer shouldn't clear transient objects (for now, lines) if game in hitstop */
+    if (hitstop_timer <= 0.0)
+      drawer.ClearTransient();
 
     /* "Frame time" */
     SDL_Delay(15);
