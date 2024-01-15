@@ -96,4 +96,11 @@ struct v2d {
   }
 };
 
+struct rect {
+  float x;
+  float y;
+  float w;
+  float h;
+};
+
 #endif

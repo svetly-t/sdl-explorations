@@ -1,3 +1,4 @@
+#include <chrono>
 #include <cstdlib>
 #include <cmath>
 
@@ -7,6 +8,28 @@
 #include "overlap.h"
 #include "sdl.h"
 #include "vector.h"
+
+class FrameTime {
+ public:
+  FrameTime() { Start(); }
+  void Start() { start_ = MicrosecondsSinceEpoch(); }
+  unsigned MicrosecondsSinceStart() { return MicrosecondsSinceEpoch() - start_; }
+  float DeltaTime() { return (float)MicrosecondsSinceStart() / 1e6; }
+  unsigned MillisecondsDelay(int fps, int frame_us) {
+    int us = 1000000 / fps;
+    us -= frame_us;
+    if (us < 0) return 0;
+    return us / 1000u;
+  }
+ private:
+  unsigned start_ = 0;
+  /* Wrapper around ugly std chrono get time */
+  unsigned MicrosecondsSinceEpoch() {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()
+    ).count();
+  }
+};
 
 /* Pulled from https://allenchou.net/2015/04/game-math-precise-control-over-numeric-springing/ */
 void Spring(float &x, float &v, float xt, float zeta, float omega, float h) {
@@ -66,7 +89,9 @@ int main(int argv, char** args) {
 
   Drawer drawer;
 
-  Overlap overlap;
+  Collision overlap;
+
+  FrameTime frame_time;
 
   /* Set up SDL */
   sdl::Initialize();
@@ -79,6 +104,11 @@ int main(int argv, char** args) {
 
   /* Oh you're gonna love this */
   float hitstop_timer = 0.0;
+
+  /*** Layer masks for collisions ***/
+ 
+  const unsigned kEnemyLayerMask = 1u << 0;
+  const unsigned kSoulsLayerMask = 1u << 1;
 
   /*** Bullet initialization ***/
 
@@ -99,8 +129,8 @@ int main(int argv, char** args) {
     float theta = 0.0;
     float ground;
 
-    const float kDefaultSpin = 2.0;
-    float spin_magnitude = kDefaultSpin;
+    const float kSpinDefault = 4.0;
+    float spin_magnitude = kSpinDefault;
 
     int hits = 0;
   };
@@ -170,6 +200,19 @@ int main(int argv, char** args) {
     float expiry;
     float t;
 
+    /* State change variables */
+    bool caught_soul;
+    enum State {
+      kNormal,
+      kSoulCatch,
+      kSouled
+    };
+    State state;
+    float state_timer;
+    
+    v2d pos;
+    v2d vel;
+
     /* ax^2 + bx + c = y, where a = beta / alpha^2 = coeff */
     float beta;
     float alpha;
@@ -226,6 +269,8 @@ int main(int argv, char** args) {
     v2d acc;
 
     float timer;
+
+    struct Enemy *enemy;
   };
   Soul souls[256];
 
@@ -240,13 +285,17 @@ int main(int argv, char** args) {
   /**********************/
 
   for (;;) {
+    float dt = frame_time.DeltaTime();
+
+    frame_time.Start();
+
     /* Get events from SDL's event system */
     if (sdl::GetEvents(input)) break;
 
     /*** Update objects ***/
 
     if (hitstop_timer > 0.0) {
-      hitstop_timer -= 0.016;
+      hitstop_timer -= dt;
     } else {
       if (ship.is_active) {
         if (ship.state == Ship::kMoving) {
@@ -267,18 +316,18 @@ int main(int argv, char** args) {
           v = v.Normalized() * speed;
 
           /* Use spring to interpolate velocity */
-          Spring(ship.vel, ship.acc, v, 0.23, 4.0 * 3.14159, 0.016);
+          Spring(ship.vel, ship.acc, v, 0.23, 4.0 * 3.14159, dt);
           /* Move the ship */
-          SemiImplicitEuler(ship.pos, ship.vel, {0.0, 0.0}, 0.016);
+          SemiImplicitEuler(ship.pos, ship.vel, {0.0, 0.0}, dt);
           /* If the ship is out of bounds, push it back according to vel */
           if (ship.pos.x > sdl::kWindowX)
-            ship.pos.x -= ship.vel.x * 0.016;
+            ship.pos.x -= ship.vel.x * dt;
           if (ship.pos.x < 0.0)
-            ship.pos.x -= ship.vel.x * 0.016;
+            ship.pos.x -= ship.vel.x * dt;
           if (ship.pos.y > sdl::kWindowY)
-            ship.pos.y -= ship.vel.y * 0.016;
+            ship.pos.y -= ship.vel.y * dt;
           if (ship.pos.y < 0.0)
-            ship.pos.y -= ship.vel.y * 0.016;
+            ship.pos.y -= ship.vel.y * dt;
           /* Apply cute bounce motion to the visual position of the ship */
           const float kSqrMaxShipSpeed = ship.kSpeed * ship.kSpeed;
           const float kBouncePeriodScale = 3.14159 / 2.0 * 7.5;
@@ -293,7 +342,7 @@ int main(int argv, char** args) {
           ship.rot.y = Lerp(ship.rot.y, -1.0, lerp_factor);
           drawer.PointAt(ship.obj, ship.rot);
           
-          ship.timer += 0.016;
+          ship.timer += dt;
 
           if (input.lmb.pressed) {
             /* Store initial position in order to calc. offset */
@@ -317,7 +366,7 @@ int main(int argv, char** args) {
           line.b = 140;
           drawer.Ray(ship.pos, -relative_mouse_offset, line);
           /* Rotate the box in the direction of the mouse */
-          Spring(ship.rot, ship.rot_vel, -relative_mouse_offset, 0.23, 4.0 * 3.14159, 0.016);
+          Spring(ship.rot, ship.rot_vel, -relative_mouse_offset, 0.23, 4.0 * 3.14159, dt);
           drawer.PointAt(ship.obj, ship.rot);
           /* Draw the "ground line" for the bullet */
           float lerp_factor = InvTween(ship.timer, 4.0);
@@ -333,14 +382,14 @@ int main(int argv, char** args) {
           /* Increase rotation speed of bullet based on length of mouse offset */
           bullet.spin_magnitude = relative_mouse_offset.Magnitude() * kThrowDamp;
 
-          ship.timer += 0.016;
+          ship.timer += dt;
 
           if (input.lmb.up) {
             /* Initialize bullet if not active */
             if (bullet.state == Bullet::kIdle) {
               bullet.is_active = true;
               bullet.vel = -relative_mouse_offset * kThrowDamp;
-              bullet.obj.pos = ship.pos + bullet.vel * 0.016;
+              bullet.obj.pos = ship.pos + bullet.vel * dt;
               bullet.rot = { 1.0, 0.0 };
               bullet.timer = 0.0;
               bullet.theta = 0.0;
@@ -375,14 +424,14 @@ int main(int argv, char** args) {
             overlap.CircleCircle(10.0, ship.obj.pos, 20.0, bullet.obj.pos);
           if (reunite) {
             bullet.state = Bullet::kIdle;
-            bullet.spin_magnitude = bullet.kDefaultSpin;
+            bullet.spin_magnitude = bullet.kSpinDefault;
           }
         }
 
         if (bullet.state == Bullet::kFalling) {
           /* Bullet kinematics if it's above the "ground line" */
           float kGravity = (bullet.vel.y > 0.0) ? 4e2 : 2e2;
-          SemiImplicitEuler(bullet.obj.pos, bullet.vel, { 0, kGravity }, 0.016);
+          SemiImplicitEuler(bullet.obj.pos, bullet.vel, { 0, kGravity }, dt);
           if (bullet.obj.pos.y > bullet.ground) {
             soul_emitter.initial_speed = bullet.vel.Magnitude();
             bullet.state = Bullet::kGrounded;
@@ -394,36 +443,38 @@ int main(int argv, char** args) {
         }
 
         if (bullet.state == Bullet::kIdle) {
-          bullet.obj.pos = Lerp(bullet.obj.pos, ship.pos, 10.0 * 0.016);
+          bullet.obj.pos = Lerp(bullet.obj.pos, ship.pos, 10.0 * dt);
         }
 
         /* Spin animation */
         const float kRotScale = 0.1;
         bullet.rot = { (float)cos(bullet.theta), (float)sin(bullet.theta) };
         drawer.PointAt(bullet.obj, bullet.rot);
-        bullet.theta += 0.016 * bullet.spin_magnitude * kRotScale;
+        bullet.theta += dt * bullet.spin_magnitude * kRotScale;
 
-        bullet.timer += 0.016;
+        bullet.timer += dt;
       }
 
       for (size_t e = 0; e < 256; ++e) {
         if (enemies[e].is_active) {
-          enemies[e].elapsed += 0.016;
+          if (enemies[e].state != Enemy::kSoulCatch) {
+            enemies[e].elapsed += dt;
 
-          float percent_along_curve =
-            enemies[e].elapsed / enemies[e].expiry;
+            float percent_along_curve =
+              enemies[e].elapsed / enemies[e].expiry;
 
-          float x = Lerp(-1, 1, percent_along_curve);
-          float sign = x < 0 ? -1 : 1;
+            float x = Lerp(-1, 1, percent_along_curve);
+            float sign = x < 0 ? -1 : 1;
 
-          enemies[e].t =
-            enemies[e].alpha *
-            (x);
+            enemies[e].t =
+              enemies[e].alpha *
+              (x);
 
-          enemies[e].obj.pos =
-            enemies[e].origin +
-            enemies[e].x_axis * enemies[e].t +
-            enemies[e].y_axis * enemies[e].coeff * enemies[e].t * enemies[e].t;
+            enemies[e].obj.pos =
+              enemies[e].origin +
+              enemies[e].x_axis * enemies[e].t +
+              enemies[e].y_axis * enemies[e].coeff * enemies[e].t * enemies[e].t;
+          }
 
           bool hit = false;
           if (bullet.state == Bullet::kFalling)
@@ -441,6 +492,25 @@ int main(int argv, char** args) {
           if (enemies[e].elapsed > enemies[e].expiry || hit) {
             enemies[e].is_active = false;
             drawer.Unregister(enemies[e].obj);
+            overlap.Unregister(enemies[e].obj);
+          }
+
+          /* Slow down on collision with a soul */
+          if (enemies[e].caught_soul) {
+            enemies[e].caught_soul = false;
+            enemies[e].expiry *= 2.0;
+            enemies[e].elapsed *= 2.0;
+            enemies[e].state = Enemy::kSoulCatch;
+            enemies[e].state_timer = 0.0;
+            enemies[e].pos = enemies[e].obj.pos;
+            enemies[e].vel = { 400.0, 0.0 };
+          }
+          /* Do a little jitter shortly after catching a soul */
+          if (enemies[e].state == Enemy::kSoulCatch) {
+            Spring(enemies[e].obj.pos, enemies[e].vel, enemies[e].pos, 0.05, 6.0 * 3.14159, dt);
+            enemies[e].state_timer += dt;
+            if (enemies[e].state_timer > 1.0)
+              enemies[e].state = Enemy::kSouled;
           }
         } else if (enemy_spawn_timer <= 0.0) {
           /***  found an inactive enemy object -- set it up ***/
@@ -473,14 +543,23 @@ int main(int argv, char** args) {
           enemies[e].coeff = enemies[e].beta / (enemies[e].alpha * enemies[e].alpha);
           enemies[e].elapsed = 0.0;
           enemies[e].expiry = 4.0;
+          enemies[e].caught_soul = false;
+          enemies[e].state = Enemy::kNormal;
 
           enemies[e].is_active = true;
           drawer.Register(enemies[e].obj);
+          /* register as a circle in the overlap engine */
+          struct Collision::Attributes col;
+          col.type = Collision::Attributes::Circle;
+          col.traits.r = 10.0;
+          col.mask = kEnemyLayerMask;
+          col.data = &enemies[e];
+          overlap.Register(enemies[e].obj, col);
         }
       }
 
       if (enemy_spawn_timer > 0.0)
-          enemy_spawn_timer -= 0.016;
+          enemy_spawn_timer -= dt;
     }
 
     /* Let souls animate outside of hitstop (this should be cool) */
@@ -495,8 +574,14 @@ int main(int argv, char** args) {
         souls[s].follow = &bullet.obj;
         souls[s].is_active = true;
         drawer.Register(souls[s].obj);
+        /* Register as a circle */
+        struct Collision::Attributes col;
+        col.type = Collision::Attributes::Circle;
+        col.traits.r = 10.0;
+        col.mask = kSoulsLayerMask;
+        overlap.Register(souls[s].obj, col);
       } else {
-        souls[s].timer += 0.016;
+        souls[s].timer += dt;
 
         /** handle various soul states **/
         
@@ -521,7 +606,14 @@ int main(int argv, char** args) {
             souls[s].follow = nullptr;
           }
         } else if (souls[s].state == Soul::kFollowingEnemy) {
-          v2d pos = souls[s].obj.pos;
+          /* If enemy gets smoked, follow the bullet */
+          if (souls[s].enemy->is_active == false) {
+            souls[s].state = Soul::kFollowingBullet;
+            souls[s].follow = &bullet.obj;
+            souls[s].enemy = nullptr;
+          }
+          /* If enemy goes offscreen, unregister */
+          v2d pos = souls[s].follow->pos;
           if (
             pos.y > sdl::kWindowY ||
             pos.x > sdl::kWindowX ||
@@ -530,23 +622,25 @@ int main(int argv, char** args) {
           ) {
             souls[s].is_active = false;
             drawer.Unregister(souls[s].obj);
+            overlap.Unregister(souls[s].obj);
           }
         } else if (souls[s].state == Soul::kFollowingShip) {
           
         } else if (souls[s].state == Soul::kBouncing) {
           /* Check for edges of screen */
           v2d pos = souls[s].obj.pos;
-          if (
-            pos.y > sdl::kWindowY ||
-            pos.x > sdl::kWindowX ||
-            pos.y < 0.0 ||
-            pos.x < 0.0
-          ) {
-            souls[s].vel = -souls[s].vel;
+          if (pos.y > sdl::kWindowY || pos.y < 0.0) {
+            souls[s].pos.y -= souls[s].vel.y * dt;
+            souls[s].vel.y = -souls[s].vel.y;
+            souls[s].acc = -souls[s].vel.Normalized() * souls[s].acc.Magnitude();
+          } 
+          if (pos.x > sdl::kWindowX || pos.x < 0.0) {
+            souls[s].pos.x -= souls[s].vel.x * dt;
+            souls[s].vel.x = -souls[s].vel.x;
             souls[s].acc = -souls[s].vel.Normalized() * souls[s].acc.Magnitude();
           }
           /* Slow down */
-          SemiImplicitEuler(souls[s].pos, souls[s].vel, souls[s].acc, 0.016);
+          SemiImplicitEuler(souls[s].pos, souls[s].vel, souls[s].acc, dt);
           /* Cut off acceleration if we're nearly stopped */
           if (souls[s].vel.SqrMagnitude() < 2.0) {
             souls[s].state == Soul::kWaiting;
@@ -554,7 +648,7 @@ int main(int argv, char** args) {
           }
           /* Apply bounce motion to the y pos */
           const float kPeriodScale = 3.14159 * 2.0 * 1.5;
-          const float kHeightScale = souls[s].vel.Magnitude() / 5.0;
+          const float kHeightScale = souls[s].vel.Magnitude() / 2.5;
           float theta = souls[s].timer / souls[s].kStopTime * kPeriodScale;
           float scale = abs(sin(theta));
           v2d bounce = { 0.0, -kHeightScale };
@@ -578,8 +672,28 @@ int main(int argv, char** args) {
         }
 
         if (!souls[s].follow) {
-          /* Check against all the enemies */
-
+          Object *follow = nullptr;
+          souls[s].enemy = nullptr;
+          if (overlap.CircleCircle(10.0, ship.obj.pos, 10.0, souls[s].obj.pos)) {
+            /* Check against ship */
+            follow = &ship.obj;
+          } else {
+            /* Check against enemies */
+            Collision::Attributes *collision =
+              overlap.CheckAgainst(souls[s].obj, kEnemyLayerMask);
+            if (collision) {
+              follow = collision->obj;
+              souls[s].enemy = (struct Enemy *)collision->data;
+              souls[s].enemy->caught_soul = true;
+            }
+          }            
+          if (follow) {
+            souls[s].state =
+              souls[s].enemy ?
+              Soul::kFollowingEnemy :
+              Soul::kFollowingShip;
+            souls[s].follow = follow;
+          }
         }
       }
     }
@@ -597,7 +711,11 @@ int main(int argv, char** args) {
       drawer.ClearTransient();
 
     /* "Frame time" */
-    SDL_Delay(15);
+    SDL_Delay(
+      frame_time.MillisecondsDelay(
+        300, frame_time.MicrosecondsSinceStart()
+      )
+    );
   }
 
   return 0;

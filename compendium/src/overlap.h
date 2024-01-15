@@ -1,12 +1,65 @@
 #ifndef OVERLAP_H
 #define OVERLAP_H
 
+#include <list>
+#include <vector>
 #include <unordered_map>
 
 #include "object.h"
 #include "vector.h"
 
-class Overlap {
+/* 
+ * Reduce the number of collider-collider checks we need
+ * to do by recursively partitioning space into fourths.
+ */
+// template <typename CONTAINER>
+// class Quadtree {
+//  public:
+//   Quadtree(unsigned level, struct rect bounds) {
+//     bounds_ = bounds;
+//     level_ = level;
+//   }
+
+//   ~Quadtree() {
+//     Clear();
+//   }
+  
+//   void Clear() {
+//     objs_.clear();
+//     /* Recursively clear child nodes */
+//     for (Quadtree<CONTAINER> &node : nodes_)
+//       node.Clear();
+//   }
+
+//   void Split() {
+
+//   }
+
+//   void Insert();
+
+//   CONTAINER Retrieve();
+//  private:
+//   /*
+//    * Get the index, from 0-3, of the subtree that this query fits in.
+//    * If the query fits in multiple subnodes, return -1 to mean "parent"
+//    */
+//   int GetIndex(rect query) {
+//     int idx = -1;
+    
+//   }
+
+//   static const unsigned kMaxObjects_ = 16;
+//   static const unsigned kMaxLevels_ = 4;
+
+//   struct rect bounds_;
+
+//   unsigned level_;
+//   std::vector<Quadtree<CONTAINER>> nodes_;
+
+//   CONTAINER objs_;
+// }; // class Quadtree
+
+class Collision {
  public:
   struct Attributes {
     enum Type {
@@ -24,9 +77,14 @@ class Overlap {
         float r;
       };
     } traits;
+    /* collision layer mask a la unity */
+    unsigned mask;
+    /* Data to be returned when someone overlaps with this object */
+    void *data;
     /* Pointer back to the object */
     Object *obj;
   };
+
   void Register(Object &object) {
     map_[object.key] = Attributes();
     map_[object.key].obj = &object;
@@ -57,6 +115,17 @@ class Overlap {
         at->traits.r, at->obj->pos,
         bt->traits.r, bt->obj->pos
       );
+    return false;
+  }
+  Attributes *CheckAgainst(const Object &query, unsigned mask) {
+    for (auto &[_, attr] : map_) {
+      /* Skip objects whose layermask doesn't match the query */
+      if ((attr.mask & mask) == 0)
+        continue;
+      if (Check(query, *attr.obj))
+        return &attr;
+    }
+    return nullptr;
   }
 
   /* type-type overlap functions */
@@ -72,6 +141,6 @@ class Overlap {
 
  private:
   std::unordered_map<size_t, struct Attributes> map_;
-}; // class Overlap
+}; // class Collision
 
 #endif
