@@ -15,27 +15,65 @@ class Drawer {
     SDL_Texture *ptr;
   };
 
-  struct Sprite {
-    struct Texture texture;
-    v2d off;
+  // struct Sprite {
+  //   struct Texture texture;
+  //   v2d off;
+  //   float w;
+  //   float h;
+  //   float theta;
+  // };
+  // void SetSprite(Object &o, std::string filename) {
+  //   size_t hash = std::hash<std::string>{}(filename);
+
+  //   if (textures_.find(hash) == textures_.end())
+  //     LoadTexture(filename, hash);
+
+  //   if (map_.find(o.key) == map_.end()) return;
+    
+  //   map_[o.key].type = Attributes::kSprite;
+  //   map_[o.key].sprite.texture = textures_[hash];
+  // }
+  // Sprite *GetSprite(Object &o) {
+  //   if (map_.find(o.key) == map_.end()) return nullptr;
+  //   return &map_[o.key].sprite;
+  // }
+
+  struct Font {
     float w;
     float h;
-    float theta;
+    struct Texture texture;
+    std::unordered_map<char, v2d> char_to_offset;
   };
-  void SetSprite(Object &o, std::string filename) {
-    size_t hash = std::hash<std::string>{}(filename);
+  template <size_t R, size_t C>
+  void LoadFont(
+    float width, 
+    float height, 
+    char (&charmap)[R][C], 
+    std::string name, 
+    std::string filename
+  ) {
+    size_t nhash = std::hash<std::string>{}(name);
 
-    if (textures_.find(hash) == textures_.end())
-      LoadTexture(filename, hash);
-    if (map_.find(o.key) == map_.end()) return;
+    if (fonts_.find(nhash) != fonts_.end())
+      return;
+
+    size_t fhash = std::hash<std::string>{}(filename);
+
+    if (textures_.find(fhash) == textures_.end())
+      LoadTexture(filename, fhash);
+
+    fonts_[nhash].texture = textures_[fhash];
+    fonts_[nhash].w = width;
+    fonts_[nhash].h = height;
     
-    map_[o.key].type = Attributes::kSprite;
-    map_[o.key].sprite.texture = textures_[hash];
+    for (size_t _r = 0; _r < R; ++_r)
+      for (size_t _c = 0; _c < C; ++_c)
+        char_to_offset[charmap[_r][_c]] = v2d(
+          _c * w,
+          _r * h
+        );
   }
-  Sprite *GetSprite(Object &o) {
-    if (map_.find(o.key) == map_.end()) return nullptr;
-    return &map_[o.key].sprite;
-  }
+
 
   struct Attributes {
     bool enabled = true;
@@ -47,7 +85,7 @@ class Drawer {
       kPrimitive,
       kSprite
     } type;
-    struct Sprite sprite;
+    // struct Sprite sprite;
     /**
      * Use a vector for rotation when drawing lines
      */
@@ -87,6 +125,7 @@ class Drawer {
   }
   void ClearTransient() {
     lines_.clear();
+    texts_.clear();
   }
   void Draw() {
     sdl::StartDraw();
@@ -102,8 +141,21 @@ class Drawer {
       }
       if (attr.type == Attributes::kSprite) {
         sdl::SetColor(attr.r, attr.g, attr.b);
-        sdl::DrawTexture(attr.sprite.texture.ptr, attr.obj->pos, attr.sprite.off, attr.sprite.h, attr.sprite.w, attr.sprite.theta);
+        // sdl::DrawTexture(attr.sprite.texture.ptr, attr.obj->pos, attr.sprite.off, attr.sprite.h, attr.sprite.w, attr.sprite.theta);
       }
+    }
+    for (const TextAttributes &t : texts_) {
+      struct Font *f = t.fontp;
+      sdl::SetColor(t.attr.r, t.attr.g, t.attr.b);
+      for (char c : t.text)
+        sdl::DrawTexture(
+          f->texture.ptr,
+          t.pos,
+          f->char_to_offset[c],
+          f->h,
+          f->w,
+          0
+        );
     }
     sdl::EndDraw();
   }
@@ -112,6 +164,11 @@ class Drawer {
   }
   void Line(v2d pos, v2d vec, struct Attributes attr) {
     lines_.push_back({ pos, vec, false, attr });
+  }
+  void Text(v2d pos, v2d dim, std::string font, std::string text, struct Attributes attr) {
+    size_t nhash = std::hash<std::string>{}(font);
+    if (fonts_.find(nhash) != fonts_.end()) return;
+    texts_.push_back({ pos, dim, text, &fonts_[nhash], attr });
   }
  private:
   std::unordered_map<size_t, struct Attributes> map_;
@@ -123,6 +180,16 @@ class Drawer {
     struct Attributes attr;
   };
   std::vector<struct LineAttributes> lines_;
+
+  std::unordered_map<size_t, struct Font> fonts_;
+  struct TextAttributes {
+    v2d pos;
+    v2d dim;
+    std::string text;
+    struct Font *fontp;
+    struct Attributes attr;
+  };
+  std::vector<struct TextAttributes> texts_;
 
   std::unordered_map<size_t, struct Texture> textures_;
   void LoadTexture(std::string filename, size_t hash) {
