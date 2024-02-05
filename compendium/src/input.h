@@ -25,6 +25,8 @@ struct Input {
   Button space;
   Button lmb;
 
+  bool any_was_pressed;
+
   v2d cursor;
 
   Input() {
@@ -34,11 +36,15 @@ struct Input {
     buttons[3] = &right;
     buttons[4] = &space;
     buttons[5] = &lmb;
+    any_was_pressed = false;
   }
 
   void AtFrameEnd() {
+    /* Clear whatever button was pressed */
+    any_was_pressed = false;
     /* Clear the transient states */
     for (Button *button : buttons) {
+      if (button->pressed) any_was_pressed = true;
       button->pressed = false;
       button->up = false;
     }

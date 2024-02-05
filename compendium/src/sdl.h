@@ -227,7 +227,15 @@ void DrawLine(v2d pos, v2d ray, bool nub) {
 
 void DrawTexture(SDL_Texture *texture, v2d dest, v2d source, float h, float w, float theta) {
   SDL_Rect src_rect;
+  src_rect.x = source.x;
+  src_rect.y = source.y;
+  src_rect.w = w;
+  src_rect.h = h;
   SDL_Rect dst_rect;
+  dst_rect.x = dest.x;
+  dst_rect.y = dest.y;
+  dst_rect.w = w;
+  dst_rect.h = h;
   SDL_RenderCopyEx(
     sdl_renderer,
     texture,

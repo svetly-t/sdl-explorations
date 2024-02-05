@@ -65,12 +65,13 @@ class Drawer {
     fonts_[nhash].texture = textures_[fhash];
     fonts_[nhash].w = width;
     fonts_[nhash].h = height;
+    Font &f = fonts_[nhash];
     
     for (size_t _r = 0; _r < R; ++_r)
       for (size_t _c = 0; _c < C; ++_c)
-        char_to_offset[charmap[_r][_c]] = v2d(
-          _c * w,
-          _r * h
+        f.char_to_offset[charmap[_r][_c]] = v2d(
+          _c * f.w,
+          _r * f.h
         );
   }
 
@@ -147,15 +148,19 @@ class Drawer {
     for (const TextAttributes &t : texts_) {
       struct Font *f = t.fontp;
       sdl::SetColor(t.attr.r, t.attr.g, t.attr.b);
-      for (char c : t.text)
+      for (size_t c = 0; c < t.text.size(); ++c) {
+        v2d dest;
+        dest.x = t.pos.x + c * f->w;
+        dest.y = t.pos.y;
         sdl::DrawTexture(
           f->texture.ptr,
-          t.pos,
-          f->char_to_offset[c],
+          dest,
+          f->char_to_offset[t.text[c]],
           f->h,
           f->w,
           0
         );
+      }
     }
     sdl::EndDraw();
   }
@@ -167,7 +172,7 @@ class Drawer {
   }
   void Text(v2d pos, v2d dim, std::string font, std::string text, struct Attributes attr) {
     size_t nhash = std::hash<std::string>{}(font);
-    if (fonts_.find(nhash) != fonts_.end()) return;
+    if (fonts_.find(nhash) == fonts_.end()) return;
     texts_.push_back({ pos, dim, text, &fonts_[nhash], attr });
   }
  private:

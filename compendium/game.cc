@@ -136,14 +136,6 @@ int main(int argv, char** args) {
   };
   Bullet bullet;
 
-  /* Reset bullet attributes with the Drawer */
-  Drawer::Attributes attr = Drawer::Attributes();
-  attr.size = 40;
-  attr.r = 255;
-  attr.g = 255;
-  attr.b = 255;
-  drawer.Register(bullet.obj, attr);
-
   /*** Player initialization ***/
 
   struct Ship {
@@ -176,14 +168,6 @@ int main(int argv, char** args) {
   ship.rot_vel = { 0.0, 0.0 };
   ship.rot = { 1.0, 0.0 };
   ship.timer = 0.0;
-
-  /* Register ship attributes with the Drawer */
-  attr = Drawer::Attributes();
-  attr.size = 20;
-  attr.r = 200;
-  attr.g = 150;
-  attr.b = 0;
-  drawer.Register(ship.obj, attr);
 
   /*** Enemy info initialization ***/
   
@@ -282,6 +266,29 @@ int main(int argv, char** args) {
   };
   SoulEmitter soul_emitter;
 
+  /** Game state **/
+
+  struct Sequence {
+    enum State {
+      kTitle,
+      kPlay,
+      kWin
+    };
+    State state;
+  };
+  Sequence sequence;
+  
+  /** Initialize font **/
+
+  char cmap[4][26] = {
+    {'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z'},
+    {'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z'},
+    {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '[', ']', '{', '}', ';', '\'', ':', '\"', ',', '.', '/', '<', '>', '?', '`', '~'},
+    {'!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '-', '=', '+', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '},
+  };
+
+  drawer.LoadFont(12, 21, cmap, "monospace", "dejavusansmono-12pt.png");
+
   /**********************/
 
   for (;;) {
@@ -296,7 +303,36 @@ int main(int argv, char** args) {
 
     if (hitstop_timer > 0.0) {
       hitstop_timer -= dt;
-    } else {
+    } else if (sequence.state == Sequence::kTitle) {
+      /* Draw title text */
+      v2d title_pos = { 10.0, 10.0 };
+      v2d title_dim;
+      Drawer::Attributes attr;
+      attr.r = 255;
+      attr.g = 255;
+      attr.b = 255;
+      drawer.Text(title_pos, title_dim, "monospace", "save one thousand souls", attr);
+      /* Listen for any key press to register the initial objects */
+      if (input.any_was_pressed) {
+        sequence.state = Sequence::kPlay;
+        /* Register ship attributes with the Drawer */
+        attr = Drawer::Attributes();
+        attr.size = 20;
+        attr.r = 200;
+        attr.g = 150;
+        attr.b = 0;
+        drawer.Register(ship.obj, attr);
+        /* Reset bullet attributes with the Drawer */
+        attr = Drawer::Attributes();
+        attr.size = 40;
+        attr.r = 255;
+        attr.g = 255;
+        attr.b = 255;
+        drawer.Register(bullet.obj, attr);
+      }
+    } else if (sequence.state == Sequence::kWin) {
+      
+    } else if (sequence.state == Sequence::kPlay) {
       if (ship.is_active) {
         if (ship.state == Ship::kMoving) {
           /* Determine the goal velocity for this frame */
@@ -440,6 +476,18 @@ int main(int argv, char** args) {
           /* Reverse direction on x-bounds */
           if (bullet.obj.pos.x < 0 || bullet.obj.pos.x > sdl::kWindowX)
             bullet.vel.x = -bullet.vel.x;
+          /* Draw a smash-style arrow if offscreen */
+          if (bullet.obj.pos.y < 0) {
+            float arrow_mag = bullet.obj.pos.y;
+            v2d arrow_start = bullet.obj.pos;
+            v2d arrow_dir = { 0.0, arrow_mag };
+            arrow_start.y = -arrow_mag + 10;
+            struct Drawer::Attributes attr;
+            attr.r = 175;
+            attr.g = 225;
+            attr.b = 140;
+            drawer.Ray(arrow_start, arrow_dir, attr);
+          }
         }
 
         if (bullet.state == Bullet::kIdle) {
