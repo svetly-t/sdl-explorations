@@ -86,14 +86,16 @@ float Deg2Rad(float degrees) {
 
 class Game {
  public:
+  void Init();
   void Play();
 };
 
-void Game::Play() {
-
+void Game::Init() {
+  /* Set up SDL */
+  sdl::Initialize();
 }
 
-int main(int argv, char** args) {
+void Game::Play() {
   /* Initialize */
   Input input;
 
@@ -103,8 +105,6 @@ int main(int argv, char** args) {
 
   FrameTime frame_time;
 
-  /* Set up SDL */
-  sdl::Initialize();
   sdl::SetInput(input);
 
   v2d center_of_screen = { sdl::kWindowX / 2, sdl::kWindowY / 2 }; 
@@ -288,6 +288,7 @@ int main(int argv, char** args) {
     int soul_count = 0;
   };
   Sequence sequence;
+  sequence.state = Sequence::kTitle;
   
   /** Initialize font **/
 
@@ -348,6 +349,8 @@ int main(int argv, char** args) {
       attr.g = 255;
       attr.b = 255;
       drawer.Text(end_pos, "monospace", "you're done, bozo", attr);
+      /* Loop on any key */
+      if (input.any_was_pressed) return;
     } else if (sequence.state == Sequence::kPlay) {
       /* Draw soul count */
       v2d score_pos = { 10.0, 10.0 };
@@ -357,7 +360,7 @@ int main(int argv, char** args) {
       attr.b = 255;
       drawer.Text(score_pos, "monospace", std::to_string(sequence.soul_count), attr);
       /* Terminate on win */
-      if (sequence.soul_count >= 10)
+      if (sequence.soul_count >= 4)
         sequence.state = Sequence::kWin;
       if (ship.is_active) {
         if (ship.state == Ship::kMoving) {
@@ -794,6 +797,11 @@ int main(int argv, char** args) {
       )
     );
   }
+}
 
+int main(int argv, char** args) {
+  Game game;
+  game.Init();
+  for (;;) game.Play();
   return 0;
 }
