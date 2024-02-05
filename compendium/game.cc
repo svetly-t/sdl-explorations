@@ -1,6 +1,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cmath>
+#include <string>
 
 #include "drawer.h"
 #include "input.h"
@@ -81,6 +82,15 @@ float InvTween(float h, float scale) {
 
 float Deg2Rad(float degrees) {
   return degrees / 360.0 * 2.0 * 3.14159;
+}
+
+class Game {
+ public:
+  void Play();
+};
+
+void Game::Play() {
+
 }
 
 int main(int argv, char** args) {
@@ -275,6 +285,7 @@ int main(int argv, char** args) {
       kWin
     };
     State state;
+    int soul_count = 0;
   };
   Sequence sequence;
   
@@ -306,12 +317,11 @@ int main(int argv, char** args) {
     } else if (sequence.state == Sequence::kTitle) {
       /* Draw title text */
       v2d title_pos = { 10.0, 10.0 };
-      v2d title_dim;
       Drawer::Attributes attr;
       attr.r = 255;
       attr.g = 255;
       attr.b = 255;
-      drawer.Text(title_pos, title_dim, "monospace", "save one thousand souls", attr);
+      drawer.Text(title_pos, "monospace", "save ten souls", attr);
       /* Listen for any key press to register the initial objects */
       if (input.any_was_pressed) {
         sequence.state = Sequence::kPlay;
@@ -331,8 +341,24 @@ int main(int argv, char** args) {
         drawer.Register(bullet.obj, attr);
       }
     } else if (sequence.state == Sequence::kWin) {
-      
+      /* Draw end text */
+      v2d end_pos = { 10.0, 10.0 };
+      Drawer::Attributes attr;
+      attr.r = 255;
+      attr.g = 255;
+      attr.b = 255;
+      drawer.Text(end_pos, "monospace", "you're done, bozo", attr);
     } else if (sequence.state == Sequence::kPlay) {
+      /* Draw soul count */
+      v2d score_pos = { 10.0, 10.0 };
+      Drawer::Attributes attr;
+      attr.r = 255;
+      attr.g = 255;
+      attr.b = 255;
+      drawer.Text(score_pos, "monospace", std::to_string(sequence.soul_count), attr);
+      /* Terminate on win */
+      if (sequence.soul_count >= 10)
+        sequence.state = Sequence::kWin;
       if (ship.is_active) {
         if (ship.state == Ship::kMoving) {
           /* Determine the goal velocity for this frame */
@@ -621,6 +647,7 @@ int main(int argv, char** args) {
         souls[s].state = Soul::kFollowingBullet;
         souls[s].follow = &bullet.obj;
         souls[s].is_active = true;
+        souls[s].enemy = nullptr;
         drawer.Register(souls[s].obj);
         /* Register as a circle */
         struct Collision::Attributes col;
@@ -638,6 +665,7 @@ int main(int argv, char** args) {
             /* Bullet must have transitioned into Idle b/c it touched ship */
             souls[s].state = Soul::kFollowingShip;
             souls[s].follow = &ship.obj;
+            ++sequence.soul_count;
           }
           if (bullet.state == Bullet::kGrounded) {
             /* Shoot off this soul in a random direction */
@@ -707,6 +735,23 @@ int main(int argv, char** args) {
 
         /********************************/
 
+        /* Check souls against enemies */
+        struct Enemy *enemy;
+        if (souls[s].state != Soul::kFollowingEnemy) {
+          Collision::Attributes *collision =
+            overlap.CheckAgainst(souls[s].obj, kEnemyLayerMask);
+          if (collision) {
+            enemy = (struct Enemy *)collision->data;
+            if (enemy->state == Enemy::kNormal && !enemy->caught_soul) {
+              souls[s].follow = collision->obj;
+              souls[s].enemy = enemy;
+              souls[s].enemy->caught_soul = true;
+              if (souls[s].state == Soul::kFollowingShip) --sequence.soul_count;
+              souls[s].state = Soul::kFollowingEnemy;
+            }
+          }
+        }
+
         if (souls[s].follow) {
           /* Rotate elliptically around the follow center */
           v2d follow_pos = souls[s].follow->pos;
@@ -720,27 +765,11 @@ int main(int argv, char** args) {
         }
 
         if (!souls[s].follow) {
-          Object *follow = nullptr;
-          souls[s].enemy = nullptr;
+          /* Check against ship */
           if (overlap.CircleCircle(10.0, ship.obj.pos, 10.0, souls[s].obj.pos)) {
-            /* Check against ship */
-            follow = &ship.obj;
-          } else {
-            /* Check against enemies */
-            Collision::Attributes *collision =
-              overlap.CheckAgainst(souls[s].obj, kEnemyLayerMask);
-            if (collision) {
-              follow = collision->obj;
-              souls[s].enemy = (struct Enemy *)collision->data;
-              souls[s].enemy->caught_soul = true;
-            }
-          }            
-          if (follow) {
-            souls[s].state =
-              souls[s].enemy ?
-              Soul::kFollowingEnemy :
-              Soul::kFollowingShip;
-            souls[s].follow = follow;
+            souls[s].state = Soul::kFollowingShip;
+            souls[s].follow = &ship.obj;
+            ++sequence.soul_count;
           }
         }
       }

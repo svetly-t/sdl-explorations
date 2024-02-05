@@ -170,9 +170,10 @@ class Drawer {
   void Line(v2d pos, v2d vec, struct Attributes attr) {
     lines_.push_back({ pos, vec, false, attr });
   }
-  void Text(v2d pos, v2d dim, std::string font, std::string text, struct Attributes attr) {
+  void Text(v2d pos, std::string font, std::string text, struct Attributes attr) {
     size_t nhash = std::hash<std::string>{}(font);
     if (fonts_.find(nhash) == fonts_.end()) return;
+    v2d dim; /* placeholder var for text box dimensions */
     texts_.push_back({ pos, dim, text, &fonts_[nhash], attr });
   }
  private:
